@@ -136,15 +136,26 @@ void modes_setup() {
     }
 }
 
+// Maximum number of packets to hold in the buffer. Don't change this.
+#define BUFFER_LEN 1024
+// Toggles FPS output (1 = print FPS over serial, 0 = disable output)
+#define PRINT_FPS 1
+
+unsigned int audio_listen_localPort = 7777;
+char packetBuffer[BUFFER_LEN];
+
+WiFiUDP audio_listen_port;
+boolean audio_active = false;
+
 // COOLING: How much does the air cool as it rises?
 // Less cooling = taller flames.  More cooling = shorter flames.
 // Default 50, suggested range 20-100 
-//#define COOLING  66
+#define COOLING  66
 
 // SPARKING: What chance (out of 255) is there that a new spark will be lit?
 // Higher chance = more roaring fire.  Lower chance = more flickery fire.
 // Default 120, suggested range 50-200.
-//#define SPARKING 100
+#define SPARKING 100
 
 // following are just for ws2812fx_custom_FastLed
 #define LED_PIN LED_PIN_V1
@@ -192,6 +203,8 @@ void srv_handle_set() {
         ws2812fx.setBrightness(state_brightness);
         state_power = true;
     }
+
+    audio_active = false;
     
     for (uint8_t i=0; i < server.args(); i++){
         if(server.argName(i) == "c") {
@@ -308,7 +321,7 @@ void reverse_show(WS2812FX *strip) {
 
 // update the physical strips's LEDs
 void myCustomShow(void) {
-    Serial.println("custom show called now");
+//    Serial.println("custom show called now");
     reverse_show(&ws2812fx_p1);
     ws2812fx_p2.show();
 }
@@ -408,6 +421,8 @@ void setup_stub(void) {
     server.on("/get", srv_handle_get);
 //    server.onNotFound(srv_handle_not_found);
 
+    audio_listen_port.begin(audio_listen_localPort);
+
     EEPROM.begin(512);
 
     int i = EEPROM.read(12);
@@ -439,11 +454,50 @@ void setup_stub(void) {
 }
 
 
+// from audio-reactive-led-strip/.../ws2812_controller_esp8266.ino
+uint16_t fpsCounter = 0;
+uint32_t secondTimer = 0;
+
+boolean check_audio(void) {
+    // Read data over socket
+    int packetSize = audio_listen_port.parsePacket();
+    // If packets have been received, interpret the command
+    if (audio_active || packetSize) {
+        if (!state_power) {
+            ws2812fx.setBrightness(state_brightness);
+            state_power = true;
+        }
+        auto_cycle = false;
+        audio_active = true;
+    }
+        
+    if (packetSize) {
+        int len = audio_listen_port.read(packetBuffer, BUFFER_LEN);
+        uint8_t N = 0;
+        for(int i = 0; i < len; i+=4) {
+            packetBuffer[len] = 0;
+            N = packetBuffer[i];
+            ws2812fx.setPixelColor(N, (uint8_t)packetBuffer[i+1], (uint8_t)packetBuffer[i+2], (uint8_t)packetBuffer[i+3]);
+        } 
+        ws2812fx.show();
+        fpsCounter++;
+
+        if (millis() - secondTimer >= 1000U) {
+            secondTimer = millis();
+            Serial.printf("FPS: %d\n", fpsCounter);
+            fpsCounter = 0;
+        }
+    }
+    return audio_active;
+}
+
 void loop_stub(void) {
     unsigned long now = millis();
 
-    ws2812fx.service();
-
+    if (!check_audio()) {
+        ws2812fx.service();
+    }
+    
     if(auto_cycle && (now - auto_last_change > 10000)) { // cycle effect mode every 10 seconds
         uint8_t next_mode = (ws2812fx.getMode() + 1) % ws2812fx.getModeCount();
         if(sizeof(myModes) > 0) { // if custom list of modes exists
