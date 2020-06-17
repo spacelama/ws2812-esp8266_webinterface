@@ -61,7 +61,7 @@ extern const char main_js[];
 
 ESP8266WebServer server(80);
 //FIXME: the light strip doesn't like analogwrite on internal led pin.
-#define LED_PIN_V1     10    // virtual digital pin used to drive the virtual LED strip
+#define LED_PIN_V1     10    // virtual digital pin (irrelevant)
 #define LED_PIN_P1     D4    // physical digital pin used to drive the first physical LED strip
 #define LED_COUNT_P1   100   // number of LEDs on the first physical strip
 #define LED_PIN_P2     D5    // physical digital pin used to drive the second physical LED strip
@@ -73,7 +73,7 @@ ESP8266WebServer server(80);
 #define max(a,b) ((a)>(b)?(a):(b))
 
 #define DEFAULT_COLOR 0xFF5900
-#define DEFAULT_BRIGHTNESS 64
+#define DEFAULT_BRIGHTNESS 128 // 16
 #define DEFAULT_SPEED 1000
 #define DEFAULT_MODE FX_MODE_STATIC
 
@@ -86,12 +86,16 @@ boolean state_power = true;
 uint8_t state_brightness = DEFAULT_BRIGHTNESS;
 
 // create an instance of one virtual strip and two physical strips.
-// the physical strips are only initialized with a count of one LED, since
+// the physical strips are only initialized with a count of one LED (except for those that we end up reversing on the fly - we store the reversed pixels in the space allocated here, since
 // these strips will ultimately use the pixel data of the virtual strip.
 // (Note the instances are created with support of only one segment and one
 // segment_runtime, just so the sketch fits in an Arduino's limited SRAM.)
+// Pixel data(GRB) takes effect at setpixel time, so is only relevant for virtual strip
+// Speed data takes effect at readout time, so is only relevant for physical strips
+uint8_t *pixels_p1_reverse;
 WS2812FX ws2812fx = WS2812FX(LED_COUNT_P1 + LED_COUNT_P2, LED_PIN_V1, NEO_GRB + NEO_KHZ800, 1, 1);
-WS2812FX ws2812fx_p1 = WS2812FX(1, LED_PIN_P1, NEO_BRG + NEO_KHZ400);
+WS2812FX ws2812fx_p1 = WS2812FX(LED_COUNT_P1, LED_PIN_P1, NEO_BRG + NEO_KHZ400);
+//WS2812FX ws2812fx_p1_swapped = WS2812FX(1, LED_PIN_P1, NEO_BRG + NEO_KHZ400);
 WS2812FX ws2812fx_p2 = WS2812FX(1, LED_PIN_P2, NEO_GRB + NEO_KHZ800);
 
 String contents_row(String title, String params) {
@@ -261,20 +265,52 @@ uint16_t ledsOff(void) {
   return(seg->speed / seglen);
 }
 
+// also need to swap green/blue for P1, and reverse pixels
+// in P1 - would have to do this for every single led update in
+// .show - original initialisation was this, which just sets array
+// offsets:
+void reverse_show(WS2812FX *strip) {
+    uint8_t *pixels = strip->getPixels();
+    uint16_t numPixels = strip->numPixels();
+    uint8_t bytesPerPixel = strip->getNumBytesPerPixel(); // 3=RGB, 4=RGBW
+    uint16_t numBytes = strip->getNumBytes();
+
+    // from WS2812FX fireworks:
+    // for better performance, manipulate the Adafruit_NeoPixels pixels[] array directly
+
+    //  memmove(pixels + (dest * bytesPerPixel), pixels + (src * bytesPerPixel), count * bytesPerPixel);
+
+//    Serial.printf("numPixels=%i, bytesPerPixel=%i, numBytes=%i\n", numPixels, bytesPerPixel, numBytes);
+    
+    for(uint16_t i=0; i <numBytes; i += bytesPerPixel) {
+        uint16_t j = numBytes - i-3; // dest, reversed from input
+        uint8_t g = pixels[i];
+        uint8_t r = pixels[i + 1];
+        uint8_t b = pixels[i + 2];
+
+        pixels_p1_reverse[j]     = b;
+        pixels_p1_reverse[j + 1] = r;
+        pixels_p1_reverse[j + 2] = g;
+
+//        Serial.printf("i=%i, j=%i ; r=%i, g=%i, b=%i\n", i, j, r, g, b);
+        if(bytesPerPixel == 4) {
+            pixels_p1_reverse[j + 3] = pixels[i + 3]; // for RGBW LEDs
+        }
+    }
+
+    // get only the first numPixels from the master virtual strip,
+    // which correspond to the first physical strip we're trying to
+    // swap
+    strip->setPixels(numPixels, pixels_p1_reverse, false);
+    strip->show();
+    strip->setPixels(numPixels, pixels, false); // swap back to normal position
+}
+
 // update the physical strips's LEDs
 void myCustomShow(void) {
-    // FIXME: also need to swap green/blue for P1, and reverse pixels
-    // in P1 - would have to do this for every single led update in
-    // .show - original initialisation was this, which just sets array
-    // offsets:
-    
-//    ws2812fx_p1.init();
-//    ws2812fx_p1.setPixels(LED_COUNT_P1, ws2812fx.getPixels());
-//    ws2812fx_p2.init();
-//    ws2812fx_p2.setPixels(LED_COUNT_P2, ws2812fx.getPixels() + (LED_COUNT_P1 * ws2812fx.getNumBytesPerPixel()));
-
-  ws2812fx_p1.show();
-  ws2812fx_p2.show();
+    Serial.println("custom show called now");
+    reverse_show(&ws2812fx_p1);
+    ws2812fx_p2.show();
 }
 
 void setup_stub(void) {
@@ -350,11 +386,13 @@ void setup_stub(void) {
     ws2812fx.start();
 
     // init the physical strip's GPIOs and reassign their pixel data
-    // pointer to use the virtual strip's pixel data.
+    // pointer to use the virtual strip's pixel data (after saving the
+    // location of the strip that will be reversed on-the-fly)
+    pixels_p1_reverse=ws2812fx_p1.getPixels();
     ws2812fx_p1.init();
-    ws2812fx_p1.setPixels(LED_COUNT_P1, ws2812fx.getPixels());
+    ws2812fx_p1.setPixels(LED_COUNT_P1, ws2812fx.getPixels(), false);
     ws2812fx_p2.init();
-    ws2812fx_p2.setPixels(LED_COUNT_P2, ws2812fx.getPixels() + (LED_COUNT_P1 * ws2812fx.getNumBytesPerPixel()));
+    ws2812fx_p2.setPixels(LED_COUNT_P2, ws2812fx.getPixels() + (LED_COUNT_P1 * ws2812fx.getNumBytesPerPixel()), true);
 
     // config a custom show() function for the virtual strip, so pixel
     // data gets sent to the physical strips's LEDs instead
