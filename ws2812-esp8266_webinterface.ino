@@ -61,17 +61,19 @@ extern const char main_js[];
 
 ESP8266WebServer server(80);
 //FIXME: the light strip doesn't like analogwrite on internal led pin.
-const int LEDSTRIP1_PIN = D5;
-const int LEDSTRIP1_COUNT = 300;
-const int LEDSTRIP2_PIN = D4;   // be sure to set the pin appropriately before rebooting
-const int LEDSTRIP2_COUNT = 100;
+#define LED_PIN_V1     10    // virtual digital pin used to drive the virtual LED strip
+#define LED_PIN_P1     D4    // physical digital pin used to drive the first physical LED strip
+#define LED_COUNT_P1   100   // number of LEDs on the first physical strip
+#define LED_PIN_P2     D5    // physical digital pin used to drive the second physical LED strip
+#define LED_COUNT_P2   300   // number of LEDs on the second physical strip
+#define LED_COUNT_V1   (LED_COUNT_P1 + LED_COUNT_P2)
 
 // QUICKFIX...See https://github.com/esp8266/Arduino/issues/263
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
 
 #define DEFAULT_COLOR 0xFF5900
-#define DEFAULT_BRIGHTNESS 128
+#define DEFAULT_BRIGHTNESS 64
 #define DEFAULT_SPEED 1000
 #define DEFAULT_MODE FX_MODE_STATIC
 
@@ -83,9 +85,14 @@ boolean auto_cycle = false;
 boolean state_power = true;
 uint8_t state_brightness = DEFAULT_BRIGHTNESS;
 
-WS2812FX ws2812fx = WS2812FX(LEDSTRIP1_COUNT, LEDSTRIP1_PIN, NEO_GRB + NEO_KHZ800);
-// FIXME: second strip will need to be configured with:
-//WS2812FX ws2812fx = WS2812FX(LEDSTRIP2_COUNT, LEDSTRIP2_PIN, NEO_BRG + NEO_KHZ400)
+// create an instance of one virtual strip and two physical strips.
+// the physical strips are only initialized with a count of one LED, since
+// these strips will ultimately use the pixel data of the virtual strip.
+// (Note the instances are created with support of only one segment and one
+// segment_runtime, just so the sketch fits in an Arduino's limited SRAM.)
+WS2812FX ws2812fx = WS2812FX(LED_COUNT_P1 + LED_COUNT_P2, LED_PIN_V1, NEO_GRB + NEO_KHZ800, 1, 1);
+WS2812FX ws2812fx_p1 = WS2812FX(1, LED_PIN_P1, NEO_BRG + NEO_KHZ400);
+WS2812FX ws2812fx_p2 = WS2812FX(1, LED_PIN_P2, NEO_GRB + NEO_KHZ800);
 
 String contents_row(String title, String params) {
     String message="";
@@ -136,8 +143,8 @@ void modes_setup() {
 //#define SPARKING 100
 
 // following are just for ws2812fx_custom_FastLed
-#define LED_PIN LEDSTRIP1_PIN
-#define NUM_LEDS LEDSTRIP1_COUNT
+#define LED_PIN LED_PIN_V1
+#define NUM_LEDS LED_COUNT_V1
 
 void Fire2012();
 #include "ws2812fx_custom_FastLED.h"
@@ -149,12 +156,7 @@ void Fire2012();
    ##################################################### */
 
 void srv_handle_not_found() {
-    server.send(404, "text/plain", "File Not Found");
-}
-
-void srv_handle_index_html() {
-//    server.send_P(200,"text/html", index_html);
-//    server.send(200, "text/plain", "Yeah nah yeah");
+    server.send(404, "text/plain", "File Not Found\n");
 }
 
 void srv_handle_main_js() {
@@ -166,11 +168,16 @@ void srv_handle_modes() {
 }
 
 void srv_handle_get() {
+    uint32_t color = ws2812fx.getColor();
+    int r = (color >> 16) & 0xff;
+    int g = (color >>  8) & 0xff;
+    int b =  color        & 0xff;
+        
     String content = "Current state:\n";
     content = content + "power: " + String(state_power) + "\n";
     content = content + "cycle: " + String(auto_cycle) + "\n";
     content = content + "brightness: " + String(( state_power ? ws2812fx.getBrightness() : state_brightness )) + "\n";
-    content = content + "colour: " + String(ws2812fx.getColor()) + "\n";
+    content = content + "colour: " + String(color) + "=("+String(r)+","+String(g)+","+String(b)+")\n";
     content = content + "mode: " + String(ws2812fx.getMode())+ "\n";
     
     server.send(200,"text/plain", content);
@@ -184,11 +191,15 @@ void srv_handle_set() {
     
     for (uint8_t i=0; i < server.args(); i++){
         if(server.argName(i) == "c") {
-            uint32_t tmp = (uint32_t) strtol(server.arg(i).c_str(), NULL, 16);
+            uint32_t tmp = (uint32_t) strtol(server.arg(i).c_str(), NULL, 10);
             if(tmp >= 0x000000 && tmp <= 0xFFFFFF) {
                 ws2812fx.setColor(tmp);
             }
-            syslog.logf(LOG_INFO, "c: \"%s\" -> %d", server.arg(i).c_str(), ws2812fx.getColor());
+            uint32_t color = ws2812fx.getColor();
+            int r = (color >> 16) & 0xff;
+            int g = (color >>  8) & 0xff;
+            int b =  color        & 0xff;
+            syslog.logf(LOG_INFO, "c: \"%s\" -> %d (%d,%d,%d)", server.arg(i).c_str(), color, r,g,b);
         }
 
         if(server.argName(i) == "m") {
@@ -231,7 +242,7 @@ void srv_handle_set() {
             syslog.logf(LOG_INFO, "a: \"%s\" -> %d", server.arg(i).c_str(), auto_cycle);
         }
     }
-    server.send(200, "text/plain", "OK");
+    server.send(200, "text/plain", "OK\n");
 }
 
 uint16_t ledsOff(void) {
@@ -248,6 +259,22 @@ uint16_t ledsOff(void) {
   }
 
   return(seg->speed / seglen);
+}
+
+// update the physical strips's LEDs
+void myCustomShow(void) {
+    // FIXME: also need to swap green/blue for P1, and reverse pixels
+    // in P1 - would have to do this for every single led update in
+    // .show - original initialisation was this, which just sets array
+    // offsets:
+    
+//    ws2812fx_p1.init();
+//    ws2812fx_p1.setPixels(LED_COUNT_P1, ws2812fx.getPixels());
+//    ws2812fx_p2.init();
+//    ws2812fx_p2.setPixels(LED_COUNT_P2, ws2812fx.getPixels() + (LED_COUNT_P1 * ws2812fx.getNumBytesPerPixel()));
+
+  ws2812fx_p1.show();
+  ws2812fx_p2.show();
 }
 
 void setup_stub(void) {
@@ -322,11 +349,21 @@ void setup_stub(void) {
 
     ws2812fx.start();
 
+    // init the physical strip's GPIOs and reassign their pixel data
+    // pointer to use the virtual strip's pixel data.
+    ws2812fx_p1.init();
+    ws2812fx_p1.setPixels(LED_COUNT_P1, ws2812fx.getPixels());
+    ws2812fx_p2.init();
+    ws2812fx_p2.setPixels(LED_COUNT_P2, ws2812fx.getPixels() + (LED_COUNT_P1 * ws2812fx.getNumBytesPerPixel()));
+
+    // config a custom show() function for the virtual strip, so pixel
+    // data gets sent to the physical strips's LEDs instead
+    ws2812fx.setCustomShow(myCustomShow);
+
 //    Serial.println("Wifi setup");
 //    wifi_setup();
  
     Serial.println("HTTP server extra setup");
-//    server.on("/", srv_handle_index_html); //handled by handleRoot_stub
     server.on("/main.js", srv_handle_main_js);
     server.on("/modes", srv_handle_modes);
     server.on("/set", srv_handle_set);
@@ -384,6 +421,5 @@ void loop_stub(void) {
         auto_last_change = now;
     }
 }
-
 
 

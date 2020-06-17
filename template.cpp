@@ -122,8 +122,8 @@ void reboot(void) {
 }
 
 void http_reboot() {
-    server.send(200, "text/html", "Rebooting...");
-
+    server.send(200, "text/plain", "Rebooting...\n");
+    delay(100);
     reboot();
 }
 
@@ -148,6 +148,7 @@ void http_uptime() {
 
     content += "Template version: " + TEMPLATE_VERSION + "\n";
     content += "Code version: " + CODE_VERSION + "\n";
+    content += "wifi: " + String(wifi_index) + " " + ssid[wifi_index] + "\n";
 
     String message=http_uptime_stub();
 
@@ -156,12 +157,12 @@ void http_uptime() {
     }
 
     content += debug; debug="";
-    server.send(200, "text/ascii", content);
+    server.send(200, "text/plain", content);
 }
 
 void http_wifi() {
     String content = "wifi: " + String(wifi_index) + " " + ssid[wifi_index] + "\n";
-    server.send(200, "text/html", content);
+    server.send(200, "text/plain", content);
 }
 
 /* void webserver() { */
@@ -230,7 +231,7 @@ void decrement_wifi_failover() {
 void http_trigger_wifi_failover() {
     trigger_wifi_failover();
     String content = "Failing over to wifi index " + String(wifi_index) + " " + ssid[wifi_index] + "\n";
-    server.send(200, "text/html", content);
+    server.send(200, "text/plain", content);
 }
 
 void execute_wifi_failover() {
