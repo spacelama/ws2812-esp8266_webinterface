@@ -61,7 +61,8 @@ extern const char main_js[];
 
 ESP8266WebServer server(80);
 //FIXME: the light strip doesn't like analogwrite on internal led pin.
-#define LED_PIN_V1     10    // virtual digital pin (irrelevant)
+#define LED_PIN_V1     D7    // virtual digital pin (dummy - used during slow initialisation, pin must not be connected to anything)
+//FIXME: It is preferred not to use D4 (or D3,D8)
 #define LED_PIN_P1     D4    // physical digital pin used to drive the first physical LED strip
 #define LED_COUNT_P1   100   // number of LEDs on the first physical strip
 #define LED_PIN_P2     D5    // physical digital pin used to drive the second physical LED strip
@@ -84,6 +85,8 @@ boolean auto_cycle = false;
 
 boolean state_power = true;
 uint8_t state_brightness = DEFAULT_BRIGHTNESS;
+unsigned long last_eeprom_write_time = 0;
+boolean eeprom_write_triggered = false;
 
 // create an instance of one virtual strip and two physical strips.
 // the physical strips are only initialized with a count of one LED (except for those that we end up reversing on the fly - we store the reversed pixels in the space allocated here, since
@@ -94,9 +97,9 @@ uint8_t state_brightness = DEFAULT_BRIGHTNESS;
 // Speed data takes effect at readout time, so is only relevant for physical strips
 uint8_t *pixels_p1_reverse;
 WS2812FX ws2812fx = WS2812FX(LED_COUNT_P1 + LED_COUNT_P2, LED_PIN_V1, NEO_GRB + NEO_KHZ800, 1, 1);
-WS2812FX ws2812fx_p1 = WS2812FX(LED_COUNT_P1, LED_PIN_P1, NEO_BRG + NEO_KHZ400);
+WS2812FX ws2812fx_p1 = WS2812FX(LED_COUNT_P1, LED_PIN_V1, NEO_BRG + NEO_KHZ400);
 //WS2812FX ws2812fx_p1_swapped = WS2812FX(1, LED_PIN_P1, NEO_BRG + NEO_KHZ400);
-WS2812FX ws2812fx_p2 = WS2812FX(1, LED_PIN_P2, NEO_GRB + NEO_KHZ800);
+WS2812FX ws2812fx_p2 = WS2812FX(1, LED_PIN_V1, NEO_GRB + NEO_KHZ800);
 
 String contents_row(String title, String params) {
     String message="";
@@ -120,6 +123,28 @@ String handleRoot_stub() {
 
 String http_uptime_stub() {
     return "";
+}
+
+void trigger_eeprom_write(void) {
+    eeprom_write_triggered=true;
+    Serial.println("Triggering eeprom for future write");
+}
+
+uint16_t mode_reboot(void) {
+    reboot();
+    return 0;
+}
+
+uint16_t reset_default(void) {
+    trigger_eeprom_write();
+    auto_cycle = false;
+    state_power = true;
+    ws2812fx.setMode(DEFAULT_MODE);
+    ws2812fx.setColor(DEFAULT_COLOR);
+    ws2812fx.setSpeed(DEFAULT_SPEED);
+    ws2812fx.setBrightness(DEFAULT_BRIGHTNESS);
+    ws2812fx.fill(ws2812fx.getColor());
+    return ws2812fx.getSpeed();
 }
 
 /*
@@ -194,11 +219,13 @@ void srv_handle_get() {
     content = content + "brightness: " + String(( state_power ? ws2812fx.getBrightness() : state_brightness )) + "\n";
     content = content + "colour: " + String(color) + "=("+String(r)+","+String(g)+","+String(b)+")\n";
     content = content + "mode: " + String(ws2812fx.getMode())+ "\n";
+    content = content + "speed: " + String(ws2812fx.getSpeed())+ "\n";
     
     server.send(200,"text/plain", content);
 }
 
 void srv_handle_set() {
+    trigger_eeprom_write();
     if (!state_power) {
         ws2812fx.setBrightness(state_brightness);
         state_power = true;
@@ -218,6 +245,17 @@ void srv_handle_set() {
             int b =  color        & 0xff;
             syslog.logf(LOG_INFO, "c: \"%s\" -> %d (%d,%d,%d)", server.arg(i).c_str(), color, r,g,b);
         }
+        if(server.argName(i) == "C") {
+            uint32_t tmp = (uint32_t) strtol(server.arg(i).c_str(), NULL, 10);
+            if(tmp >= 0x000000 && tmp <= 0xFFFFFF) {
+                ws2812fx.setColor(tmp); //FIXME: make this the second color, if there was a cursor movement between press and release https://stackoverflow.com/questions/6042202/how-to-distinguish-mouse-click-and-drag
+            }
+            uint32_t color = ws2812fx.getColor();
+            int r = (color >> 16) & 0xff;
+            int g = (color >>  8) & 0xff;
+            int b =  color        & 0xff;
+            syslog.logf(LOG_INFO, "C: \"%s\" -> %d (%d,%d,%d)", server.arg(i).c_str(), color, r,g,b);
+        }
 
         if(server.argName(i) == "m") {
             uint8_t tmp = (uint8_t) strtol(server.arg(i).c_str(), NULL, 10);
@@ -235,7 +273,7 @@ void srv_handle_set() {
                 uint8_t tmp = (uint8_t) strtol(server.arg(i).c_str(), NULL, 10);
                 ws2812fx.setBrightness(tmp);
             }
-            syslog.logf(LOG_INFO, "b: \"%s\" -> %d", server.arg(i).c_str(), ws2812fx.getBrightness());
+            syslog.logf(LOG_INFO, "b: '%s' -> %d", server.arg(i).c_str(), ws2812fx.getBrightness());
             Serial.print("brightness is "); Serial.println(ws2812fx.getBrightness());
         }
 
@@ -245,9 +283,9 @@ void srv_handle_set() {
             } else {
                 ws2812fx.setSpeed(ws2812fx.getSpeed() * 0.8);
             }
-            syslog.logf(LOG_INFO, "s: \"%s\" -> %d", server.arg(i).c_str(), ws2812fx.getSpeed());
+            syslog.logf(LOG_INFO, "s: '%s' -> %d", server.arg(i).c_str(), ws2812fx.getSpeed());
             Serial.print("speed is "); Serial.println(ws2812fx.getSpeed());
-        }
+       }
 
         if(server.argName(i) == "a") {
             if(server.arg(i)[0] == '-') {
@@ -262,17 +300,23 @@ void srv_handle_set() {
     server.send(200, "text/plain", "OK\n");
 }
 
+void srv_handle_default() {
+    server.sendHeader("Location", "/",true);   //Redirect to our html web page  
+    server.send(302, "text/plain","Resetting to default\n");
+    reset_default();
+}
+
 uint16_t ledsOff(void) {
   WS2812FX::Segment* seg = ws2812fx.getSegment(); // get the current segment
   uint16_t seglen = seg->stop - seg->start + 1;
 
   if (state_power) {
+      trigger_eeprom_write();
       state_brightness = ws2812fx.getBrightness();
       state_power = false;
       auto_cycle = false;
 
       ws2812fx.setBrightness(0);
-      ws2812fx.fade_out();
   }
 
   return(seg->speed / seglen);
@@ -319,11 +363,76 @@ void reverse_show(WS2812FX *strip) {
     strip->setPixels(numPixels, pixels, false); // swap back to normal position
 }
 
+void read_Eeprom() {
+    Serial.println("Reading eeprom");
+    EEPROM.begin(512);
+
+    // FIXME: record and reread last boot.  If rebooted too rapidly,
+    // assume an early crash, and default to a safe mode
+
+    uint32_t color;
+    uint8_t mode;
+    uint16_t speed;
+    
+    EEPROM.get(0, state_power); //byte
+    EEPROM.get(1, auto_cycle); //byte
+    EEPROM.get(2, state_brightness); //byte
+    EEPROM.get(3, mode); //byte
+    EEPROM.get(4, speed); //2 bytes
+    EEPROM.get(6, color); //4 bytes
+    EEPROM.get(10, last_eeprom_write_time); // 4 bytes
+//    EEPROM.get(14, last_boot_time); // 4 bytes
+
+    Serial.printf("Read eeprom: state_power=%hhd, auto_cycle=%hhd, state_brightness=%hhd, mode=%hhd, speed=%d, color=%ld, last_eeprom_write_time=%ld\n",
+                  state_power, auto_cycle, state_brightness, mode, speed, color, last_eeprom_write_time);
+
+    //FIXME: implement a CRC or detect that we've just been flashed, and go back to default mode instead
+
+    if (state_power) {
+        ws2812fx.setBrightness(state_brightness);
+    } else {
+        ws2812fx.setBrightness(0);
+    }
+    ws2812fx.setMode(mode);
+    ws2812fx.setColor(color);
+    ws2812fx.setSpeed(speed);
+}
+
+void write_Eeprom() {
+    Serial.println("Writing eeprom");
+
+    EEPROM.begin(512);
+
+    // FIXME: record and reread last boot.  If rebooted too rapidly,
+    // assume an early crash, and default to a safe mode
+
+    last_eeprom_write_time = millis();
+    EEPROM.put(0, state_power); //byte
+    EEPROM.put(1, auto_cycle); //byte
+    EEPROM.put(2, state_brightness); //byte
+    EEPROM.put(3, ws2812fx.getMode()); //byte
+    EEPROM.put(4, ws2812fx.getSpeed()); //2 bytes
+    EEPROM.put(6, ws2812fx.getColor()); //4 bytes
+    EEPROM.put(10, last_eeprom_write_time); // 4 bytes
+//    EEPROM.put(14, last_boot_time); // 4 bytes
+
+//    EEPROM.write(12, i+1);  // comment out next 3 lines after first upload, re upload sketch, and check values.
+//    EEPROM.write(13, j+1);
+    EEPROM.commit();
+}
+
+boolean pins_reassigned = false;
 // update the physical strips's LEDs
 void myCustomShow(void) {
-//    Serial.println("custom show called now");
+    Serial.println("custom show called now");
     reverse_show(&ws2812fx_p1);
     ws2812fx_p2.show();
+    if (!pins_reassigned) {
+        pins_reassigned = true;
+        Serial.println("reassigning pins after having already rendered");
+        ws2812fx_p1.setPin(LED_PIN_P1);
+        ws2812fx_p2.setPin(LED_PIN_P2);
+    }
 }
 
 void setup_stub(void) {
@@ -374,27 +483,32 @@ void setup_stub(void) {
   
     ledRamp(led_range,0,1000,30);
 
+//    server.on("/", handleRoot);
+
     //FIXME: default to the last mode used - store this in EEPROM
          // https://www.best-microcontroller-projects.com/arduino-eeprom.html
          // Write to it max 10 times a day for 27 years lifetime.  Use
          // .update to only write if unchanged.  
     
-//    server.on("/", handleRoot);
-
     ws2812fx.setCustomMode(0, F("Fire2012"), myCustomEffect);
     ws2812fx.setCustomMode(1, F("Dual Larson"), dualLarson);
     ws2812fx.setCustomMode(2, F("Rainbow Fireworks"), rainbowFireworks);
     ws2812fx.setCustomMode(3, F("Off"), ledsOff);
+    ws2812fx.setCustomMode(4, F("Reset Default"), reset_default);
+    ws2812fx.setCustomMode(5, F("Reboot"), mode_reboot);
 
     modes.reserve(5000);
     modes_setup();
 
     Serial.println("WS2812FX setup");
     ws2812fx.init();
-    ws2812fx.setMode(DEFAULT_MODE);
-    ws2812fx.setColor(DEFAULT_COLOR);
-    ws2812fx.setSpeed(DEFAULT_SPEED);
-    ws2812fx.setBrightness(DEFAULT_BRIGHTNESS);
+
+    read_Eeprom();
+
+    /* ws2812fx.setMode(DEFAULT_MODE); */
+    /* ws2812fx.setColor(DEFAULT_COLOR); */
+    /* ws2812fx.setSpeed(DEFAULT_SPEED); */
+    /* ws2812fx.setBrightness(DEFAULT_BRIGHTNESS); */
 
     ws2812fx.start();
 
@@ -419,25 +533,10 @@ void setup_stub(void) {
     server.on("/modes", srv_handle_modes);
     server.on("/set", srv_handle_set);
     server.on("/get", srv_handle_get);
+    server.on("/default", srv_handle_default);
 //    server.onNotFound(srv_handle_not_found);
 
     audio_listen_port.begin(audio_listen_localPort);
-
-    EEPROM.begin(512);
-
-    int i = EEPROM.read(12);
-    Serial.println();
-    Serial.print("eeprom12: ");
-    Serial.println(i);
-
-    int j = EEPROM.read(12);  //FIXME: or put and get
-
-    Serial.print("eeprom13: ");
-    Serial.println(j);
-
-//    EEPROM.write(12, i+1);  // comment out next 3 lines after first upload, re upload sketch, and check values.
-//    EEPROM.write(13, j+1);
-//    EEPROM.commit();
 
     ledRamp(0,led_range,80,30);
 
@@ -497,8 +596,12 @@ void loop_stub(void) {
     if (!check_audio()) {
         ws2812fx.service();
     }
-    
-    if(auto_cycle && (now - auto_last_change > 10000)) { // cycle effect mode every 10 seconds
+
+    if (eeprom_write_triggered && abs(now - last_eeprom_write_time) > 60000) {
+        write_Eeprom();
+        eeprom_write_triggered = false;
+    }
+    if (auto_cycle && (now - auto_last_change > 10000)) { // cycle effect mode every 10 seconds
         uint8_t next_mode = (ws2812fx.getMode() + 1) % ws2812fx.getModeCount();
         if(sizeof(myModes) > 0) { // if custom list of modes exists
             for(uint8_t i=0; i < sizeof(myModes); i++) {

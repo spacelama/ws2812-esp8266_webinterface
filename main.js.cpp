@@ -41,7 +41,7 @@ window.addEventListener('DOMContentLoaded', (event) => {
   colorctx.fillRect(0, 0, colorCanvas.width - 1, colorCanvas.height - 1);
 
   // setup the canvas click listener
-  colorCanvas.addEventListener('click', (event) => {
+  colorCanvas.addEventListener('mousedown', (event) => {
     var imageData = colorCanvas.getContext('2d').getImageData(event.offsetX, event.offsetY, 1, 1);
 
     var selectedColor = 'rgb(' + imageData.data[0] + ',' + imageData.data[1] + ',' + imageData.data[2] + ')'; 
@@ -50,6 +50,18 @@ window.addEventListener('DOMContentLoaded', (event) => {
 
     selectedColor = imageData.data[0] * 65536 + imageData.data[1] * 256 + imageData.data[2];
     submitVal('c', selectedColor);
+  });
+
+  // setup the canvas click-release listener
+  colorCanvas.addEventListener('mouseup', (event) => {
+    var imageData = colorCanvas.getContext('2d').getImageData(event.offsetX, event.offsetY, 1, 1);
+
+    var selectedColor = 'rgb(' + imageData.data[0] + ',' + imageData.data[1] + ',' + imageData.data[2] + ')'; 
+    //console.log('click: ' + event.offsetX + ', ' + event.offsetY + ', ' + selectedColor);
+    document.getElementById('color-value').value = selectedColor;
+
+    selectedColor = imageData.data[0] * 65536 + imageData.data[1] * 256 + imageData.data[2];
+    submitVal('C', selectedColor);
   });
 
   // get list of modes from ESP

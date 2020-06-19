@@ -13,6 +13,7 @@
 void setup_stub();
 void loop_stub();
 String http_uptime_stub();
+void reboot(void);
 
 void ledBright(unsigned int val);
 void ledRamp(int start, int finish, unsigned int duration, unsigned int steps);

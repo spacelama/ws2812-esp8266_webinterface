@@ -122,7 +122,9 @@ void reboot(void) {
 }
 
 void http_reboot() {
-    server.send(200, "text/plain", "Rebooting...\n");
+//    server.send(200, "text/plain", "Rebooting...\n");
+    server.sendHeader("Location", "/",true);   //Redirect to our html web page  
+    server.send(302, "text/plain","Rebooting...\n");
     delay(100);
     reboot();
 }
