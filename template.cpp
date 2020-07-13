@@ -304,6 +304,7 @@ void eventWiFi(WiFiEvent_t event) {
     
       case WIFI_EVENT_STAMODE_GOT_IP:
           dbg_printf("[WiFi] %d, Got IP: %s\n", event, WiFi.localIP().toString().c_str());
+          syslog.logf(LOG_INFO, "[WiFi] %d, Got IP: %s\n", event, WiFi.localIP().toString().c_str());
           break;
     
       case WIFI_EVENT_STAMODE_DHCP_TIMEOUT:
@@ -472,6 +473,7 @@ void setup(void){
 
     setup_stub();
     Serial.println("Ready!");
+    syslog.logf(LOG_INFO, "Setup finished. Got IP: %s\n", WiFi.localIP().toString().c_str());
 }
 
 void loop() {

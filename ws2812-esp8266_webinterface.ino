@@ -108,14 +108,14 @@ WS2812FX ws2812fx_p2 = WS2812FX(1, LED_PIN_V1, NEO_GRB + NEO_KHZ800);
 // h = [0,360], s = [0,1], v = [0,1]
 //		if s == 0, then h = -1 (undefined)
 
-void RGBtoHSV( int r, int g, int b, float *hf, float *sf, float *vf )
+void RGBtoHSV( uint8_t r, uint8_t g, uint8_t b, float *hf, float *sf, float *vf )
 {
     float min, max, delta;
     float rf, gf, bf;
 
-    rf = float(r)/256;
-    gf = float(g)/256;
-    bf = float(b)/256;
+    rf = float(r)/255;
+    gf = float(g)/255;
+    bf = float(b)/255;
 
     min = min3( rf, gf, bf );
     max = max3( rf, gf, bf );
@@ -148,7 +148,7 @@ void RGBtoHSV( int r, int g, int b, float *hf, float *sf, float *vf )
         *hf += 360;
 }
 
-void HSVtoRGB( int *r, int *g, int *b, float hf, float sf, float vf )
+void HSVtoRGB( uint8_t *r, uint8_t *g, uint8_t *b, float hf, float sf, float vf )
 {
     int i;
     float f, p, q, t;
@@ -156,7 +156,7 @@ void HSVtoRGB( int *r, int *g, int *b, float hf, float sf, float vf )
 
     if( sf == 0 ) {
         // achromatic (grey)
-        *r = *g = *b = vf*256;
+        *r = *g = *b = vf*255;
         return;
     }
 
@@ -199,9 +199,9 @@ void HSVtoRGB( int *r, int *g, int *b, float hf, float sf, float vf )
           bf = q;
           break;
     }
-    *r = rf*256;
-    *g = gf*256;
-    *b = bf*256;
+    *r = rf*255;
+    *g = gf*255;
+    *b = bf*255;
 }
 
 String contents_row(String title, String params) {
@@ -312,17 +312,17 @@ void srv_handle_modes() {
 
 void srv_handle_get() {
     uint32_t *colors = ws2812fx.getColors(0);
-    int r1 = (colors[0] >> 16) & 0xff;
-    int g1 = (colors[0] >>  8) & 0xff;
-    int b1 =  colors[0]        & 0xff;
+    uint8_t r1 = (colors[0] >> 16) & 0xff;
+    uint8_t g1 = (colors[0] >>  8) & 0xff;
+    uint8_t b1 =  colors[0]        & 0xff;
 
-    int r2 = (colors[1] >> 16) & 0xff;
-    int g2 = (colors[1] >>  8) & 0xff;
-    int b2 =  colors[1]        & 0xff;
+    uint8_t r2 = (colors[1] >> 16) & 0xff;
+    uint8_t g2 = (colors[1] >>  8) & 0xff;
+    uint8_t b2 =  colors[1]        & 0xff;
 
-    int r3 = (colors[2] >> 16) & 0xff;
-    int g3 = (colors[2] >>  8) & 0xff;
-    int b3 =  colors[2]        & 0xff;
+    uint8_t r3 = (colors[2] >> 16) & 0xff;
+    uint8_t g3 = (colors[2] >>  8) & 0xff;
+    uint8_t b3 =  colors[2]        & 0xff;
 
     float h1, s1, v1;
     float h2, s2, v2;
@@ -380,6 +380,8 @@ void srv_handle_set() {
                 colors[i]=(uint32_t) strtol(token, NULL, 10);
                 token = strtok(NULL, " ");
                 i++;
+                if (i > 2)
+                    break;
             }
 
             ws2812fx.setColors(0, colors);
@@ -400,14 +402,18 @@ void srv_handle_set() {
                 token = strtok_r(arg_str, " ", &saveptr1);
                 if (token == NULL)
                     break;
+                if (i > 2)
+                    break;
 //                syslog.logf(LOG_INFO, "arg_str=%s", arg_str);
                 syslog.logf(LOG_INFO, "token=%s", token);
                 delay(10);
 
-                unsigned long color=0;
+                uint32_t color=0;
                 for (color_str = token, j = 0; ; j++, color_str = NULL) {
                     subtoken = strtok_r(color_str, ",", &saveptr2);
                     if (subtoken == NULL)
+                        break;
+                    if (j > 2)
                         break;
 //                    syslog.logf(LOG_INFO, "color_str=%s", color_str);
                     syslog.logf(LOG_INFO, "subtoken=%s", subtoken);
@@ -422,9 +428,57 @@ void srv_handle_set() {
             syslog.logf(LOG_INFO, "set->colors[]=%lu,%lu,%lu", colors[0],colors[1],colors[2]);
             ws2812fx.setColors(0, colors);
             free(arg);
-        } else if(server.argName(i) == "coloursHSV") { //FIXME: add ability to parse h,s,v
+        } else if(server.argName(i) == "coloursHSV") {
+            char *arg = strdup(server.arg(i).c_str());
+            char *saveptr1, *saveptr2;
+            char *token, *subtoken;
+            char *arg_str,*color_str;
+            int i,j;
+
+            uint32_t colors[3] = {0,0,0};
+            syslog.logf(LOG_INFO, "arg=%s", arg);
+
+            // example from man strtok
+            
+            for (arg_str=arg, i = 0; ; i++, arg_str = NULL) {
+                token = strtok_r(arg_str, " ", &saveptr1);
+                if (token == NULL)
+                    break;
+                if (i > 2)
+                    break;
+//                syslog.logf(LOG_INFO, "arg_str=%s", arg_str);
+                syslog.logf(LOG_INFO, "token=%s", token);
+                delay(10);
+
+                uint32_t color=0;
+                float color_t[3] = {0.0,0.0,0.0};
+                for (color_str = token, j = 0; ; j++, color_str = NULL) {
+                    subtoken = strtok_r(color_str, ",", &saveptr2);
+                    if (subtoken == NULL)
+                        break;
+                    if (j > 2)
+                        break;
+//                    syslog.logf(LOG_INFO, "color_str=%s", color_str);
+                    syslog.logf(LOG_INFO, "subtoken=%s", subtoken);
+                    delay(10);
+
+                    color_t[j] = strtof(subtoken, NULL);
+                }
+                uint8_t r,g,b;
+                syslog.logf(LOG_INFO, "h,s,v=%.2f,%.2f,%.2f", color_t[0], color_t[1], color_t[2]);
+                HSVtoRGB(&r,&g,&b, color_t[0], color_t[1], color_t[2]);
+                syslog.logf(LOG_INFO, "r,g,b=%u,%u,%u", r,g,b);
+                color = r*256*256 + g*256 + b;
+                syslog.logf(LOG_INFO, "colors[%d]=%lu", i,color);
+
+                colors[i]=color;
+            }
+
+            syslog.logf(LOG_INFO, "set->colors[]=%lu,%lu,%lu", colors[0],colors[1],colors[2]);
+            ws2812fx.setColors(0, colors);
+            free(arg);
+
             uint32_t color1 = (uint32_t) strtol(server.arg(i).c_str(), NULL, 10);
-            //FIXME: get second color
             uint32_t color2 = (uint32_t) strtol(server.arg(i).c_str(), NULL, 10);
             uint32_t color3 = (uint32_t) strtol(server.arg(i).c_str(), NULL, 10);
 //            void HSVtoRGB( int &r, int &g, int &b, float h, float s, float v )
@@ -447,20 +501,20 @@ void srv_handle_set() {
                 ws2812fx.setColor(tmp);
             }
             uint32_t color = ws2812fx.getColor();
-            int r = (color >> 16) & 0xff;
-            int g = (color >>  8) & 0xff;
-            int b =  color        & 0xff;
-            syslog.logf(LOG_INFO, "c: \"%s\" -> %d (%d,%d,%d)", server.arg(i).c_str(), color, r,g,b);
+            uint8_t r = (color >> 16) & 0xff;
+            uint8_t g = (color >>  8) & 0xff;
+            uint8_t b =  color        & 0xff;
+            syslog.logf(LOG_INFO, "c: \"%s\" -> %ul (%u,%u,%u)", server.arg(i).c_str(), color, r,g,b);
         } else if(server.argName(i) == "C") {
             uint32_t tmp = (uint32_t) strtol(server.arg(i).c_str(), NULL, 10);
             if(tmp >= 0x000000 && tmp <= 0xFFFFFF) {
                 ws2812fx.setColor(tmp); //FIXME: make this the second color, if there was a cursor movement between press and release https://stackoverflow.com/questions/6042202/how-to-distinguish-mouse-click-and-drag
             }
             uint32_t color = ws2812fx.getColor();
-            int r = (color >> 16) & 0xff;
-            int g = (color >>  8) & 0xff;
-            int b =  color        & 0xff;
-            syslog.logf(LOG_INFO, "C: \"%s\" -> %d (%d,%d,%d)", server.arg(i).c_str(), color, r,g,b);
+            uint8_t r = (color >> 16) & 0xff;
+            uint8_t g = (color >>  8) & 0xff;
+            uint8_t b =  color        & 0xff;
+            syslog.logf(LOG_INFO, "C: \"%s\" -> %ul (%u,%u,%u)", server.arg(i).c_str(), color, r,g,b);
         }
 
         else if(server.argName(i) == "m") {
