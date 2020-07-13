@@ -659,21 +659,23 @@ void read_Eeprom() {
     // FIXME: record and reread last boot.  If rebooted too rapidly,
     // assume an early crash, and default to a safe mode
 
-    uint32_t color;
     uint8_t mode;
     uint16_t speed;
+    uint32_t colors[3];
 
     EEPROM.get(0, state_power); //byte
     EEPROM.get(1, auto_cycle); //byte
     EEPROM.get(2, state_brightness); //byte
     EEPROM.get(3, mode); //byte
     EEPROM.get(4, speed); //2 bytes
-    EEPROM.get(6, color); //4 bytes  //FIXME: 3 colours
+    EEPROM.get(6, colors[0]); //4 bytes * 3 colours
+    EEPROM.get(10, colors[1]);
+    EEPROM.get(14, colors[2]);
     EEPROM.get(10, last_eeprom_write_time); // 4 bytes
 //    EEPROM.get(14, last_boot_time); // 4 bytes
 
-    syslog.logf(LOG_INFO, "Read eeprom: state_power=%hhu, auto_cycle=%hhu, state_brightness=%hhu, mode=%hhu, speed=%u, color=%lu, last_eeprom_write_time=%lu\n",
-                  state_power, auto_cycle, state_brightness, mode, speed, color, last_eeprom_write_time);
+    syslog.logf(LOG_INFO, "Read eeprom: state_power=%hhu, auto_cycle=%hhu, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                  state_power, auto_cycle, state_brightness, mode, speed, colors[0],colors[1],colors[2], last_eeprom_write_time);
 
     //FIXME: implement a CRC or detect that we've just been flashed, and go back to default mode instead
 
@@ -683,12 +685,14 @@ void read_Eeprom() {
         ws2812fx.setBrightness(0);
     }
     ws2812fx.setMode(mode);
-    ws2812fx.setColor(color);
     ws2812fx.setSpeed(speed);
+    ws2812fx.setColors(0, colors);
 }
 
 void write_Eeprom() {
     Serial.println("Writing eeprom");
+
+    uint32_t *colors = ws2812fx.getColors(0);
 
     EEPROM.begin(512);
 
@@ -701,14 +705,16 @@ void write_Eeprom() {
     EEPROM.put(2, state_brightness); //byte
     EEPROM.put(3, ws2812fx.getMode()); //byte
     EEPROM.put(4, ws2812fx.getSpeed()); //2 bytes
-    EEPROM.put(6, ws2812fx.getColor()); //4 bytes  //FIXME: 3 colours
-    EEPROM.put(10, last_eeprom_write_time); // 4 bytes
+    EEPROM.put(6, colors[0]); //4 bytes * 3 colours
+    EEPROM.put(10, colors[1]);
+    EEPROM.put(14, colors[2]);
+    EEPROM.put(18, last_eeprom_write_time); // 4 bytes
 //    EEPROM.put(14, last_boot_time); // 4 bytes
 
     EEPROM.commit();
 
-    syslog.logf(LOG_INFO, "Write eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, color=%lu, last_eeprom_write_time=%lu\n",
-                  state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), ws2812fx.getColor(), last_eeprom_write_time);
+    syslog.logf(LOG_INFO, "Write eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
 }
 
 boolean pins_reassigned = false;
