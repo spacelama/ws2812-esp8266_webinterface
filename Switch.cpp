@@ -52,56 +52,67 @@ _doubleClick       ____________________________________________| |____
 
 // level(0)
 Switch::Switch(byte _pin, byte PinMode, bool polarity, int debounceDelay, int longPressDelay, int doubleClickDelay):
-pin(_pin), polarity(polarity), debounceDelay(debounceDelay), longPressDelay(longPressDelay), doubleClickDelay(doubleClickDelay)
-{ pinMode(pin, PinMode);
-  _switchedTime = millis();
-  level = digitalRead(pin);
+    pin(_pin), polarity(polarity), debounceDelay(debounceDelay), longPressDelay(longPressDelay), doubleClickDelay(doubleClickDelay) {
+    pinMode(pin, PinMode);
+    _switchedTime = millis();
+    level = digitalRead(pin);
 }
 
-bool Switch::poll()
-{ _longPress = _doubleClick = false;
-  bool newlevel = digitalRead(pin);
+bool Switch::poll() {
+    _longPress = _doubleClick = _tripleClick = false;
+    bool newlevel = digitalRead(pin);
 
-  if(!longPressLatch)
-  { _longPress = on() && ((long)(millis() - pushedTime) > longPressDelay); // true just one time between polls
-    longPressLatch = _longPress; // will be reset at next switch
-  }
-
-  if((newlevel != level) & (millis() - _switchedTime >= debounceDelay))
-  { _switchedTime = millis();
-    level = newlevel;
-    _switched = 1;
-    longPressLatch = false;
-
-    if(pushed())
-    { _doubleClick = (long)(millis() - pushedTime) < doubleClickDelay;
-      pushedTime = millis();
+    if(!longPressLatch) {
+        _longPress = on() && ((long)(millis() - pushedTime) > longPressDelay); // true just one time between polls
+        longPressLatch = _longPress; // will be reset at next switch
     }
+
+    if((newlevel != level) & (millis() - _switchedTime >= debounceDelay)) {
+        _switchedTime = millis();
+        level = newlevel;
+        _switched = 1;
+        longPressLatch = false;
+
+        if(pushed()) {
+            _doubleClick = (long)(millis() - pushedTime) < doubleClickDelay;
+            _tripleClick = (long)(millis() - doubleClickedTime) < doubleClickDelay;
+            if (_doubleClick) {
+                doubleClickedTime = millis();
+            }
+            if (_tripleClick) {
+                tripleClickedTime = millis();
+            }
+            pushedTime = millis();
+        }
+        return _switched;
+    }
+    return _switched = 0;
+}
+
+bool Switch::switched() {
     return _switched;
-  }
-  return _switched = 0;
 }
 
-bool Switch::switched()
-{ return _switched;
+bool Switch::on() {
+    return !(level^polarity);
 }
 
-bool Switch::on()
-{ return !(level^polarity);
+bool Switch::pushed() {
+    return _switched && !(level^polarity);
 }
 
-bool Switch::pushed()
-{ return _switched && !(level^polarity);
+bool Switch::released() {
+    return _switched && (level^polarity);
 }
 
-bool Switch::released()
-{ return _switched && (level^polarity);
+bool Switch::longPress() {
+    return _longPress;
 }
 
-bool Switch::longPress()
-{ return _longPress;
+bool Switch::doubleClick() {
+    return _doubleClick && !_tripleClick;
 }
 
-bool Switch::doubleClick()
-{ return _doubleClick;
+bool Switch::tripleClick() {
+    return _tripleClick;
 }
