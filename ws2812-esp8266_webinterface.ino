@@ -48,6 +48,8 @@
 #include <Adafruit_NeoPixel.h>
 #include "FastLED.h" // be sure to install and include the FastLED lib
 
+#include "Switch.h"
+
 #include <WS2812FX.h>
 #include "template.h"
 String CODE_VERSION = "$Revision$";
@@ -68,6 +70,7 @@ ESP8266WebServer server(80);
 #define LED_PIN_P2     D5    // physical digital pin used to drive the second physical LED strip
 #define LED_COUNT_P2   300   // number of LEDs on the second physical strip
 #define LED_COUNT_V1   (LED_COUNT_P1 + LED_COUNT_P2)
+#define mainButtonPin  D6
 
 // QUICKFIX...See https://github.com/esp8266/Arduino/issues/263
 #define min(a,b) ((a)<(b)?(a):(b))
@@ -103,6 +106,16 @@ WS2812FX ws2812fx_p1 = WS2812FX(LED_COUNT_P1, LED_PIN_V1, NEO_BRG + NEO_KHZ400);
 //WS2812FX ws2812fx_p1_swapped = WS2812FX(1, LED_PIN_P1, NEO_BRG + NEO_KHZ400);
 WS2812FX ws2812fx_p2 = WS2812FX(1, LED_PIN_V1, NEO_GRB + NEO_KHZ800);
 
+bool long_pressed = false;
+bool double_clicked = false;
+bool triple_clicked = false;
+unsigned long time_button_released = 0;
+
+#define LONG_CLICK 400
+#define DOUBLE_CLICK 250
+
+Switch mainButton = Switch(mainButtonPin,INPUT_PULLUP,LOW,50,LONG_CLICK,DOUBLE_CLICK);  // Switch between a digital pin and GND
+
 // https://www.cs.rit.edu/~ncs/color/t_convert.html
 // r,g,b values are from 0 to 1
 // h = [0,360], s = [0,1], v = [0,1]
@@ -122,7 +135,7 @@ void RGBtoHSV( uint8_t r, uint8_t g, uint8_t b, float *hf, float *sf, float *vf 
     *vf = max;				// v
 
     delta = max - min;
-    syslog.logf(LOG_INFO, "min,max,delta = %f,%f,%f\n", min,max,delta);
+//    syslog.logf(LOG_INFO, "min,max,delta = %f,%f,%f\n", min,max,delta);
 
 
     if( max != 0 )
@@ -297,6 +310,177 @@ void Fire2012();
 /* #####################################################
    #  Webserver Functions
    ##################################################### */
+
+uint16_t ledsOff(void) {
+    WS2812FX::Segment* seg = ws2812fx.getSegment(); // get the current segment
+    uint16_t seglen = seg->stop - seg->start + 1;
+
+    if (state_power) {
+        state_brightness = ws2812fx.getBrightness();
+        state_power = false;
+        auto_cycle = false;
+
+        ws2812fx.setBrightness(0);
+    }
+
+    return(seg->speed / seglen);
+}
+
+uint16_t ledsOn(void) {
+    WS2812FX::Segment* seg = ws2812fx.getSegment(); // get the current segment
+    uint16_t seglen = seg->stop - seg->start + 1;
+
+    ws2812fx.setBrightness(state_brightness);
+    state_power = true;
+
+    return(seg->speed / seglen);
+}
+
+uint16_t warm_light(void) {
+    WS2812FX::Segment* seg = ws2812fx.getSegment(); // get the current segment
+    uint16_t seglen = seg->stop - seg->start + 1;
+    
+    ws2812fx.setMode(FX_MODE_STATIC);
+    state_brightness=160;
+    ws2812fx.setBrightness(state_brightness);
+    uint32_t color=16739896; //=(255,110,56)
+    ws2812fx.setColor(color);
+    ws2812fx.fill(ws2812fx.getColor());
+
+    return(seg->speed / seglen);
+}
+
+uint16_t dark_ambient(void) {
+    WS2812FX::Segment* seg = ws2812fx.getSegment(); // get the current segment
+    uint16_t seglen = seg->stop - seg->start + 1;
+
+    ws2812fx.setMode(FX_MODE_STATIC);
+    state_brightness=20;
+    ws2812fx.setBrightness(state_brightness);
+    uint32_t color=16734464; //=(255,89,0)
+    ws2812fx.setColor(color);
+    ws2812fx.fill(ws2812fx.getColor());
+
+    return(seg->speed / seglen);
+}
+
+int s_dirn=1;
+int v_dirn=1;
+float h1_saved=0;
+float s1_saved=0;
+float v1_saved=0;
+unsigned long hsv_read_time = 0;
+
+void pollButtons() {
+    // Read buttons
+    mainButton.poll();
+
+    if (mainButton.switched()) {
+        syslog.log(LOG_INFO, "main button switched");
+    }
+
+    if (mainButton.pushed()) {
+        syslog.log(LOG_INFO, "main button pushed");
+        double_clicked = false;
+        triple_clicked = false;
+    }
+    if (mainButton.released()) {
+        syslog.log(LOG_INFO, "main button released\n");
+        if (!long_pressed && !double_clicked && !triple_clicked) {
+            time_button_released = millis();
+        }
+        long_pressed = false;
+    } else if (mainButton.tripleClick()) {
+        syslog.log(LOG_INFO, "registering main button tripleClick");
+        triple_clicked = true;
+        double_clicked = false;
+        time_button_released=0;
+    } else if (mainButton.doubleClick()) {
+        syslog.log(LOG_INFO, "registering main button doubleClick");
+        double_clicked = true;
+        time_button_released=0;
+    } else if (long_pressed || mainButton.longPress()) {
+        long_pressed = true;
+        time_button_released=0;
+
+        uint32_t *colors = ws2812fx.getColors(0); 
+        uint8_t r1;
+        uint8_t g1;
+        uint8_t b1;
+        float h1=h1_saved;
+        float s1=s1_saved;
+        float v1=v1_saved;
+        uint32_t color=0;
+
+        if (millis() > hsv_read_time + 50) {
+            r1 = (colors[0] >> 16) & 0xff;
+            g1 = (colors[0] >>  8) & 0xff;
+            b1 =  colors[0]        & 0xff;
+            RGBtoHSV( r1, g1, b1, &h1, &s1, &v1 );
+        }
+        hsv_read_time=millis();
+
+        if (triple_clicked) {
+            // saturation, back and forth, constant
+            s1 += 0.001*s_dirn;
+            if (s1 >= 1) {
+                s1=0.999;
+                s_dirn=-1;
+            } else if (s1 <= 0) {
+                s1=0.001;
+                s_dirn=1;
+            }
+
+            syslog.logf(LOG_INFO, "setting saturation to %0.2f", s_dirn, s1);
+        } else if (double_clicked) {
+            // hue, circular, accelerating
+            h1 += 0.1;
+            if (h1 > 360) {
+                h1-=360;
+            }
+
+            syslog.logf(LOG_INFO, "setting hue to %0.2f", h1);
+        } else {
+            // brightness, back and forth, accelerating
+            v1 += 0.001*v_dirn;
+            if (v1 >= 1) {
+                v1=0.999;
+                v_dirn=-1;
+            } else if (v1 <= 0) {
+                v1=0.001;
+                v_dirn=1;
+            }
+
+            syslog.logf(LOG_INFO, "setting brightness to %0.2f", v_dirn, v1);
+        }
+        h1_saved=h1;
+        s1_saved=s1;
+        v1_saved=v1;
+        HSVtoRGB(&r1,&g1,&b1, h1, s1, v1);
+//        syslog.logf(LOG_INFO, "r,g,b=%u,%u,%u", r1,g1,b1);
+        color = r1*256*256 + g1*256 + b1;
+//        syslog.logf(LOG_INFO, "color=%lu", color);
+
+        colors[0]=color;
+
+//        syslog.logf(LOG_INFO, "set->colors[]=%lu,%lu,%lu", colors[0],colors[1],colors[2]);
+        ws2812fx.setColors(0, colors);
+        trigger_eeprom_write();
+    }
+
+    if (time_button_released) {
+        if (millis() > time_button_released + LONG_CLICK+50) {
+            time_button_released=0;
+            syslog.log(LOG_INFO, "main button pressed, not long, double or triple");
+
+            if (state_power) {
+                ledsOff();
+            } else {
+                ledsOn();
+            }
+        }
+    }
+}
 
 void srv_handle_not_found() {
     server.send(404, "text/plain", "File Not Found\n");
@@ -568,47 +752,16 @@ void srv_handle_default() {
     reset_default();
 }
 
-uint16_t ledsOff(void) {
-    WS2812FX::Segment* seg = ws2812fx.getSegment(); // get the current segment
-    uint16_t seglen = seg->stop - seg->start + 1;
-
-    if (state_power) {
-        state_brightness = ws2812fx.getBrightness();
-        state_power = false;
-        auto_cycle = false;
-
-        ws2812fx.setBrightness(0);
-    }
-
-    return(seg->speed / seglen);
+void srv_handle_off() {
+    server.sendHeader("Location", "/",true);   //Redirect to our html web page  
+    server.send(302, "text/plain","Turning Off\n");
+    ledsOff();
 }
 
-uint16_t warm_light(void) {
-    WS2812FX::Segment* seg = ws2812fx.getSegment(); // get the current segment
-    uint16_t seglen = seg->stop - seg->start + 1;
-    
-    ws2812fx.setMode(FX_MODE_STATIC);
-    state_brightness=160;
-    ws2812fx.setBrightness(state_brightness);
-    uint32_t color=16739896; //=(255,110,56)
-    ws2812fx.setColor(color);
-    ws2812fx.fill(ws2812fx.getColor());
-
-    return(seg->speed / seglen);
-}
-
-uint16_t dark_ambient(void) {
-    WS2812FX::Segment* seg = ws2812fx.getSegment(); // get the current segment
-    uint16_t seglen = seg->stop - seg->start + 1;
-
-    ws2812fx.setMode(FX_MODE_STATIC);
-    state_brightness=20;
-    ws2812fx.setBrightness(state_brightness);
-    uint32_t color=16734464; //=(255,89,0)
-    ws2812fx.setColor(color);
-    ws2812fx.fill(ws2812fx.getColor());
-
-    return(seg->speed / seglen);
+void srv_handle_on() {
+    server.sendHeader("Location", "/",true);   //Redirect to our html web page  
+    server.send(302, "text/plain","Turning On\n");
+    ledsOn();
 }
 
 // also need to swap green/blue for P1, and reverse pixels
@@ -828,6 +981,8 @@ void setup_stub(void) {
     server.on("/set", srv_handle_set);
     server.on("/get", srv_handle_get);
     server.on("/default", srv_handle_default);
+    server.on("/off", srv_handle_off);
+    server.on("/on", srv_handle_on);
 //    server.onNotFound(srv_handle_not_found);
 
     audio_listen_port.begin(audio_listen_localPort);
@@ -916,6 +1071,7 @@ void loop_stub(void) {
             auto_last_change = now;
         }
     }
+    pollButtons();
 }
 
 
