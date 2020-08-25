@@ -112,8 +112,8 @@ bool double_clicked = false;
 bool triple_clicked = false;
 unsigned long time_button_released = 0;
 
-#define LONG_CLICK 400
-#define DOUBLE_CLICK 250
+#define LONG_CLICK 500
+#define DOUBLE_CLICK 450
 
 Switch mainButton = Switch(mainButtonPin,INPUT_PULLUP,LOW,50,LONG_CLICK,DOUBLE_CLICK);  // Switch between a digital pin and GND
 
@@ -382,6 +382,23 @@ void pollButtons() {
 
     if (mainButton.pushed()) {
         syslog.log(LOG_INFO, "main button pushed");
+        if (!triple_clicked) { // if single clicked, turn off (if
+                               // held, we just end up resetting
+                               // brightness after double-click
+                               // delay).  If double-click-held, then
+                               // brightness will be restored.  But
+                               // for triple-click, we know the next
+                               // movement will be to modify
+                               // saturation, so don't turn off yet
+            time_button_released=0;
+            syslog.log(LOG_INFO, "main button pressed, not long, double or triple");
+
+            if (state_power) {
+                ledsOff();
+            } else {
+                ledsOn();
+            }
+        }
         double_clicked = false;
         triple_clicked = false;
     }
@@ -423,7 +440,7 @@ void pollButtons() {
 
         if (triple_clicked) {
             // saturation, back and forth, constant
-            s1 += 0.001*s_dirn;
+            s1 += 0.01*s_dirn;
             if (s1 >= 1) {
                 s1=0.999;
                 s_dirn=-1;
@@ -435,7 +452,7 @@ void pollButtons() {
             syslog.logf(LOG_INFO, "setting saturation to %0.2f", s_dirn, s1);
         } else if (double_clicked) {
             // hue, circular, accelerating
-            h1 += 0.1;
+            h1 += 0.5;
             if (h1 > 360) {
                 h1-=360;
             }
@@ -443,11 +460,11 @@ void pollButtons() {
             syslog.logf(LOG_INFO, "setting hue to %0.2f", h1);
         } else {
             // brightness, back and forth, accelerating
-            v1 += 0.001*v_dirn;
+            v1 += (v1/20)*v_dirn;
             if (v1 >= 1) {
                 v1=0.999;
                 v_dirn=-1;
-            } else if (v1 <= 0) {
+            } else if (v1 <= 0.001) {
                 v1=0.001;
                 v_dirn=1;
             }
@@ -470,19 +487,6 @@ void pollButtons() {
 //        syslog.logf(LOG_INFO, "set->colors[]=%lu,%lu,%lu", colors[0],colors[1],colors[2]);
         ws2812fx.setColors(0, colors);
         trigger_eeprom_write();
-    }
-
-    if (time_button_released) {
-        if (millis() > time_button_released + LONG_CLICK+50) {
-            time_button_released=0;
-            syslog.log(LOG_INFO, "main button pressed, not long, double or triple");
-
-            if (state_power) {
-                ledsOff();
-            } else {
-                ledsOn();
-            }
-        }
     }
 }
 
