@@ -63,7 +63,7 @@ extern const char main_js[];
 
 ESP8266WebServer server(80);
 //FIXME: the light strip doesn't like analogwrite on internal led pin.
-#define LED_PIN_V1     D7    // virtual digital pin (dummy - used during slow initialisation, pin must not be connected to anything)
+#define LED_PIN_V1     D2    // virtual digital pin (dummy - used during slow initialisation, pin must not be connected to anything)
 //FIXME: It is preferred not to use D4 (or D3,D8)
 #define LED_PIN_P1     D4    // physical digital pin used to drive the first physical LED strip
 #define LED_COUNT_P1   100   // number of LEDs on the first physical strip
@@ -71,6 +71,7 @@ ESP8266WebServer server(80);
 #define LED_COUNT_P2   300   // number of LEDs on the second physical strip
 #define LED_COUNT_V1   (LED_COUNT_P1 + LED_COUNT_P2)
 #define mainButtonPin  D6
+#define mainButtonPair D7
 
 // QUICKFIX...See https://github.com/esp8266/Arduino/issues/263
 #define min(a,b) ((a)<(b)?(a):(b))
@@ -455,7 +456,10 @@ void pollButtons() {
         }
         h1_saved=h1;
         s1_saved=s1;
-        v1_saved=v1;
+        v1_saved=v1*state_brightness/255;
+        state_brightness=255;
+        state_power=true;
+        ws2812fx.setBrightness(state_brightness);
         HSVtoRGB(&r1,&g1,&b1, h1, s1, v1);
 //        syslog.logf(LOG_INFO, "r,g,b=%u,%u,%u", r1,g1,b1);
         color = r1*256*256 + g1*256 + b1;
@@ -895,6 +899,14 @@ void setup_stub(void) {
     pinMode(D8, OUTPUT);
 
     ledRamp(0,led_range,1000,30);
+
+    pinMode(mainButtonPair, OUTPUT);    // In the absense of a spare
+                                        // ground pin, and a switch
+                                        // with a dual connector,
+                                        // let's just set the pin next
+                                        // to mainButtonPin LOW, and
+                                        // pretend it's ground
+    digitalWrite(mainButtonPair, LOW);
 
 //    pinMode(relayPin, OUTPUT);
 
