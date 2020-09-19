@@ -86,6 +86,7 @@ ESP8266WebServer server(80);
 
 unsigned long auto_last_change = 0;
 String modes = "";
+//uint8_t myModes[] = {59,60,61,58,0,62}; // *** optionally create a custom list of effect/mode numbers
 uint8_t myModes[] = {}; // *** optionally create a custom list of effect/mode numbers
 boolean auto_cycle = false;
 
@@ -261,6 +262,9 @@ uint16_t reset_default(void) {
     ws2812fx.setSpeed(DEFAULT_SPEED);
     ws2812fx.setBrightness(DEFAULT_BRIGHTNESS);
     ws2812fx.fill(ws2812fx.getColor());
+
+    trigger_eeprom_write();
+
     return ws2812fx.getSpeed();
 }
 
@@ -317,11 +321,18 @@ uint16_t ledsOff(void) {
     uint16_t seglen = seg->stop - seg->start + 1;
 
     if (state_power) {
+        ws2812fx.setMode(DEFAULT_MODE); //ideally we'd set it to last
+                                        //mode, but we don't know what
+                                        //that was before the user
+                                        //pressed the off button,
+                                        //which resets mode
         state_brightness = ws2812fx.getBrightness();
         state_power = false;
         auto_cycle = false;
 
         ws2812fx.setBrightness(0);
+
+        trigger_eeprom_write();
     }
 
     return(seg->speed / seglen);
@@ -333,6 +344,8 @@ uint16_t ledsOn(void) {
 
     ws2812fx.setBrightness(state_brightness);
     state_power = true;
+
+    trigger_eeprom_write();
 
     return(seg->speed / seglen);
 }
@@ -458,7 +471,7 @@ void pollButtons() {
             }
 
             syslog.logf(LOG_INFO, "setting hue to %0.2f", h1);
-        } else {
+        } else { // single clicked
             // brightness, back and forth, accelerating
             v1 += (v1/20)*v_dirn;
             if (v1 >= 1) {
@@ -486,6 +499,7 @@ void pollButtons() {
 
 //        syslog.logf(LOG_INFO, "set->colors[]=%lu,%lu,%lu", colors[0],colors[1],colors[2]);
         ws2812fx.setColors(0, colors);
+
         trigger_eeprom_write();
     }
 }
@@ -890,6 +904,7 @@ void myCustomShow(void) {
         ws2812fx_p1.setPin(LED_PIN_P1);
         ws2812fx_p2.setPin(LED_PIN_P2);
     }
+    syslog.logf(LOG_INFO, "time: %d\n", millis());
 }
 
 void setup_stub(void) {
@@ -1063,8 +1078,6 @@ void loop_stub(void) {
     unsigned long now = millis();
 
     if (!check_audio()) {
-        ws2812fx.service();
-
         // https://www.best-microcontroller-projects.com/arduino-eeprom.html
         // Write to it max 10 times a day for 27 years lifetime.  Use
         // .update to only write if unchanged.  
@@ -1087,6 +1100,7 @@ void loop_stub(void) {
             auto_last_change = now;
         }
     }
+    ws2812fx.service();
     pollButtons();
 }
 
