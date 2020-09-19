@@ -79,11 +79,12 @@ ESP8266WebServer server(80);
 #define min3(a,b,c) ((a)<(min(b,c))?(a):(min(b,c)))
 #define max3(a,b,c) ((a)>(max(b,c))?(a):(max(b,c)))
 
-#define DEFAULT_COLOR 0xFF5900
+#define DEFAULT_COLOR 0xFFAA88
 #define DEFAULT_BRIGHTNESS 128 // 16
 #define DEFAULT_SPEED 1000
 #define DEFAULT_MODE FX_MODE_STATIC
 
+uint8_t current_mode;
 unsigned long auto_last_change = 0;
 String modes = "";
 //uint8_t myModes[] = {59,60,61,58,0,62}; // *** optionally create a custom list of effect/mode numbers
@@ -123,6 +124,15 @@ Switch mainButton = Switch(mainButtonPin,INPUT_PULLUP,LOW,50,LONG_CLICK,DOUBLE_C
 // h = [0,360], s = [0,1], v = [0,1]
 //		if s == 0, then h = -1 (undefined)
 
+float fade_dirn=0;
+float initial_fade_multiplier=1;
+int s_dirn=1;
+int v_dirn=1;
+float h1_saved=0;
+float s1_saved=0;
+float v1_saved=0;
+unsigned long hsv_read_time = 0;
+
 void RGBtoHSV( uint8_t r, uint8_t g, uint8_t b, float *hf, float *sf, float *vf )
 {
     float min, max, delta;
@@ -161,6 +171,7 @@ void RGBtoHSV( uint8_t r, uint8_t g, uint8_t b, float *hf, float *sf, float *vf 
     *hf *= 60;				// 0-360 degrees
     if( *hf < 0 )
         *hf += 360;
+    syslog.logf(LOG_INFO,"rf,gf,bf, min,max, delta, hf,sf,vf->%0.3f,%0.3f,%0.3f, %0.3f,%0.3f, %0.3f, %0.3f,%0.3f,%0.3f", rf,gf,bf, min,max, delta, *hf,*sf,*vf);
 }
 
 void HSVtoRGB( uint8_t *r, uint8_t *g, uint8_t *b, float hf, float sf, float vf )
@@ -217,6 +228,8 @@ void HSVtoRGB( uint8_t *r, uint8_t *g, uint8_t *b, float hf, float sf, float vf 
     *r = rf*255;
     *g = gf*255;
     *b = bf*255;
+
+    syslog.logf(LOG_INFO,"hf,i,f,p,q,t, rf,gf,bf->%0.3f,%i,%0.3f,%0.3f,%0.3f,%0.3f, %0.3f,%0.3f,%0.3f, %i,%i,%i", hf,i,f,p,q,t, rf,gf,bf, *r,*g,*b);
 }
 
 String contents_row(String title, String params) {
@@ -321,11 +334,10 @@ uint16_t ledsOff(void) {
     uint16_t seglen = seg->stop - seg->start + 1;
 
     if (state_power) {
-        ws2812fx.setMode(DEFAULT_MODE); //ideally we'd set it to last
-                                        //mode, but we don't know what
-                                        //that was before the user
-                                        //pressed the off button,
-                                        //which resets mode
+        ws2812fx.setMode(current_mode);  // mode prior to being reset
+                                         // by the user calling a
+                                         // function or pressing a
+                                         // button
         state_brightness = ws2812fx.getBrightness();
         state_power = false;
         auto_cycle = false;
@@ -378,18 +390,12 @@ uint16_t dark_ambient(void) {
     return(seg->speed / seglen);
 }
 
-int s_dirn=1;
-int v_dirn=1;
-float h1_saved=0;
-float s1_saved=0;
-float v1_saved=0;
-unsigned long hsv_read_time = 0;
-
 void pollButtons() {
     // Read buttons
     mainButton.poll();
 
     if (mainButton.switched()) {
+        fade_dirn = 0;
         syslog.log(LOG_INFO, "main button switched");
     }
 
@@ -482,7 +488,7 @@ void pollButtons() {
                 v_dirn=1;
             }
 
-            syslog.logf(LOG_INFO, "setting brightness to %0.2f", v_dirn, v1);
+            syslog.logf(LOG_INFO, "setting brightness %i to %0.3f", v_dirn, v1);
         }
         h1_saved=h1;
         s1_saved=s1;
@@ -499,6 +505,7 @@ void pollButtons() {
 
 //        syslog.logf(LOG_INFO, "set->colors[]=%lu,%lu,%lu", colors[0],colors[1],colors[2]);
         ws2812fx.setColors(0, colors);
+        ws2812fx.trigger();
 
         trigger_eeprom_write();
     }
@@ -553,12 +560,66 @@ void srv_handle_get() {
     server.send(200,"text/plain", content);
 }
 
+void handle_fade() {
+    uint32_t *colors = ws2812fx.getColors(0); 
+    uint8_t r1;
+    uint8_t g1;
+    uint8_t b1;
+    float h1=h1_saved;
+    float s1=s1_saved;
+    float v1=v1_saved;
+    uint32_t color=0;
+
+    if (millis() > hsv_read_time + 50) {
+        r1 = (colors[0] >> 16) & 0xff;
+        g1 = (colors[0] >>  8) & 0xff;
+        b1 =  colors[0]        & 0xff;
+        RGBtoHSV( r1, g1, b1, &h1, &s1, &v1 );
+    }
+    hsv_read_time=millis();
+
+    v1 *= initial_fade_multiplier;
+    v1 += (v1/20)/fade_dirn;
+    initial_fade_multiplier=1;
+    if (v1 > 1) {
+        v1=1;
+        fade_dirn=0;
+        ws2812fx.setBrightness(state_brightness);
+    } else if ((fade_dirn < 0) && (v1 <= 0.005)) {
+        v1=1;
+        fade_dirn=0;
+        state_power=false;
+        ws2812fx.setBrightness(0);
+    } else {
+        ws2812fx.setBrightness(state_brightness);
+    }
+
+    syslog.logf(LOG_INFO, "setting brightness %0.2f to %0.3f", fade_dirn, v1);
+    delay(1); // give time for syslog UDP buffer
+    h1_saved=h1;
+    s1_saved=s1;
+    v1_saved=v1; //*state_brightness/255;
+//    state_brightness=255;
+//        ws2812fx.setBrightness(state_brightness);
+    HSVtoRGB(&r1,&g1,&b1, h1, s1, v1);
+//        syslog.logf(LOG_INFO, "r,g,b=%u,%u,%u", r1,g1,b1);
+    color = r1*256*256 + g1*256 + b1;
+//        syslog.logf(LOG_INFO, "color=%lu", color);
+
+    colors[0]=color;
+
+//        syslog.logf(LOG_INFO, "set->colors[]=%lu,%lu,%lu", colors[0],colors[1],colors[2]);
+    ws2812fx.setColors(0, colors);
+    ws2812fx.trigger();
+}
+
 void srv_handle_set() {
     trigger_eeprom_write();
     if (!state_power) {
         ws2812fx.setBrightness(state_brightness);
         state_power = true;
     }
+    fade_dirn = 0;
 
     audio_active = false;
     
@@ -571,9 +632,6 @@ void srv_handle_set() {
             } else {
                 ws2812fx.setBrightness(0);
             }
-        } else if(server.argName(i) == "mode") {
-            uint8_t mode = (uint8_t) strtol(server.arg(i).c_str(), NULL, 10);
-            ws2812fx.setMode(mode);
         } else if(server.argName(i) == "colours") {
             char *arg = strdup(server.arg(i).c_str());
             char *token;
@@ -600,7 +658,7 @@ void srv_handle_set() {
             int i,j;
 
             uint32_t colors[3] = {0,0,0};
-            syslog.logf(LOG_INFO, "arg=%s", arg);
+//            syslog.logf(LOG_INFO, "arg=%s", arg);
 
             // example from man strtok
             
@@ -611,8 +669,7 @@ void srv_handle_set() {
                 if (i > 2)
                     break;
 //                syslog.logf(LOG_INFO, "arg_str=%s", arg_str);
-                syslog.logf(LOG_INFO, "token=%s", token);
-                delay(10);
+//                syslog.logf(LOG_INFO, "token=%s", token);
 
                 uint32_t color=0;
                 for (color_str = token, j = 0; ; j++, color_str = NULL) {
@@ -622,12 +679,11 @@ void srv_handle_set() {
                     if (j > 2)
                         break;
 //                    syslog.logf(LOG_INFO, "color_str=%s", color_str);
-                    syslog.logf(LOG_INFO, "subtoken=%s", subtoken);
-                    delay(10);
+//                    syslog.logf(LOG_INFO, "subtoken=%s", subtoken);
 
                     color = color*256 + (uint8_t) strtol(subtoken, NULL, 10);
                 }
-                syslog.logf(LOG_INFO, "colors[%d]=%lu", i,color);
+//                syslog.logf(LOG_INFO, "colors[%d]=%lu", i,color);
                 colors[i]=color;
             }
 
@@ -642,7 +698,7 @@ void srv_handle_set() {
             int i,j;
 
             uint32_t colors[3] = {0,0,0};
-            syslog.logf(LOG_INFO, "arg=%s", arg);
+//            syslog.logf(LOG_INFO, "arg=%s", arg);
 
             // example from man strtok
             
@@ -653,8 +709,7 @@ void srv_handle_set() {
                 if (i > 2)
                     break;
 //                syslog.logf(LOG_INFO, "arg_str=%s", arg_str);
-                syslog.logf(LOG_INFO, "token=%s", token);
-                delay(10);
+//                syslog.logf(LOG_INFO, "token=%s", token);
 
                 uint32_t color=0;
                 float color_t[3] = {0.0,0.0,0.0};
@@ -665,17 +720,16 @@ void srv_handle_set() {
                     if (j > 2)
                         break;
 //                    syslog.logf(LOG_INFO, "color_str=%s", color_str);
-                    syslog.logf(LOG_INFO, "subtoken=%s", subtoken);
-                    delay(10);
+//                    syslog.logf(LOG_INFO, "subtoken=%s", subtoken);
 
                     color_t[j] = strtof(subtoken, NULL);
                 }
                 uint8_t r,g,b;
-                syslog.logf(LOG_INFO, "h,s,v=%.2f,%.2f,%.2f", color_t[0], color_t[1], color_t[2]);
+//                syslog.logf(LOG_INFO, "h,s,v=%.2f,%.2f,%.2f", color_t[0], color_t[1], color_t[2]);
                 HSVtoRGB(&r,&g,&b, color_t[0], color_t[1], color_t[2]);
-                syslog.logf(LOG_INFO, "r,g,b=%u,%u,%u", r,g,b);
+//                syslog.logf(LOG_INFO, "r,g,b=%u,%u,%u", r,g,b);
                 color = r*256*256 + g*256 + b;
-                syslog.logf(LOG_INFO, "colors[%d]=%lu", i,color);
+//                syslog.logf(LOG_INFO, "colors[%d]=%lu", i,color);
 
                 colors[i]=color;
             }
@@ -698,8 +752,17 @@ void srv_handle_set() {
             uint8_t tmp = (uint8_t) strtol(server.arg(i).c_str(), NULL, 10);
             state_brightness = tmp;
             ws2812fx.setBrightness(state_brightness);
+        } else if(server.argName(i) == "fadeOn") {
+            fade_dirn = (float) strtof(server.arg(i).c_str(), NULL);
+            initial_fade_multiplier=0.005;
+            state_power = true;
+            ws2812fx.setBrightness(state_brightness);
+            syslog.logf(LOG_INFO, "Fade up: fade_dirn=%.2f", fade_dirn);
+            handle_fade();
+        } else if(server.argName(i) == "fadeOff") {
+            fade_dirn = -(float) strtof(server.arg(i).c_str(), NULL);
+            syslog.logf(LOG_INFO, "Fade down: fade_dirn=%.2f", fade_dirn);
         }
-
 
         else if(server.argName(i) == "c") {
             uint32_t tmp = (uint32_t) strtol(server.arg(i).c_str(), NULL, 10);
@@ -723,11 +786,13 @@ void srv_handle_set() {
             syslog.logf(LOG_INFO, "C: \"%s\" -> %ul (%u,%u,%u)", server.arg(i).c_str(), color, r,g,b);
         }
 
-        else if(server.argName(i) == "m") {
+        else if((server.argName(i) == "m") || (server.argName(i) == "mode")) {
             uint8_t tmp = (uint8_t) strtol(server.arg(i).c_str(), NULL, 10);
             syslog.logf(LOG_INFO, "m: %s", server.arg(i).c_str());
-            ws2812fx.setMode(tmp % ws2812fx.getModeCount());
-            Serial.print("mode is "); Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+            tmp = tmp % ws2812fx.getModeCount();
+            tmp = sizeof(myModes) > 0 ? myModes[tmp] : tmp;
+            ws2812fx.setMode(tmp);
+            syslog.logf(LOG_INFO, "mode is %s", ws2812fx.getModeName(ws2812fx.getMode()));
         } else if(server.argName(i) == "b") {
             if(server.arg(i)[0] == '-') {
                 state_brightness=ws2812fx.getBrightness() * 0.8;
@@ -739,7 +804,6 @@ void srv_handle_set() {
             }
             ws2812fx.setBrightness(state_brightness);
             syslog.logf(LOG_INFO, "b: '%s' -> %d", server.arg(i).c_str(), state_brightness);
-            Serial.print("brightness is "); Serial.println(state_brightness);
         }
 
         else if(server.argName(i) == "s") {
@@ -749,7 +813,6 @@ void srv_handle_set() {
                 ws2812fx.setSpeed(ws2812fx.getSpeed() * 0.8);
             }
             syslog.logf(LOG_INFO, "s: '%s' -> %d", server.arg(i).c_str(), ws2812fx.getSpeed());
-            Serial.print("speed is "); Serial.println(ws2812fx.getSpeed());
         }
 
         else if(server.argName(i) == "a") {
@@ -865,8 +928,6 @@ void read_Eeprom() {
 }
 
 void write_Eeprom() {
-    Serial.println("Writing eeprom");
-
     uint32_t *colors = ws2812fx.getColors(0);
 
     EEPROM.begin(512);
@@ -904,7 +965,7 @@ void myCustomShow(void) {
         ws2812fx_p1.setPin(LED_PIN_P1);
         ws2812fx_p2.setPin(LED_PIN_P2);
     }
-    syslog.logf(LOG_INFO, "time: %d\n", millis());
+//    syslog.logf(LOG_INFO, "time: %d\n", millis());
 }
 
 void setup_stub(void) {
@@ -1081,7 +1142,7 @@ void loop_stub(void) {
         // https://www.best-microcontroller-projects.com/arduino-eeprom.html
         // Write to it max 10 times a day for 27 years lifetime.  Use
         // .update to only write if unchanged.  
-        if (eeprom_write_triggered && abs(now - last_eeprom_write_time) > 60000) {
+        if (eeprom_write_triggered && (fade_dirn == 0) && abs(now - last_eeprom_write_time) > 60000) {
             write_Eeprom();
             eeprom_write_triggered = false;
         }
@@ -1096,12 +1157,17 @@ void loop_stub(void) {
                 }
             }
             ws2812fx.setMode(next_mode);
-            Serial.print("mode is "); Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+            syslog.logf("mode is %s", ws2812fx.getModeName(ws2812fx.getMode()));
             auto_last_change = now;
         }
     }
-    ws2812fx.service();
+    if (fade_dirn != 0) {
+        handle_fade();
+    }
     pollButtons();
+
+    ws2812fx.service();
+    current_mode=ws2812fx.getMode();
 }
 
 
