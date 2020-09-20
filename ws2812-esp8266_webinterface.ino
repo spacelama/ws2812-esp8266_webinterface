@@ -614,18 +614,18 @@ void handle_fade() {
 }
 
 void srv_handle_set() {
-    trigger_eeprom_write();
-    if (!state_power) {
-        ws2812fx.setBrightness(state_brightness);
-        state_power = true;
-    }
+    int effecting_change = 0;
     fade_dirn = 0;
-
-    audio_active = false;
     
     for (uint8_t i=0; i < server.args(); i++){
+        int this_loop_effecting_change=1;
         if(server.argName(i) == "power") {
-            state_power = strtol(server.arg(i).c_str(), NULL, 10);
+            bool new_state_power = strtol(server.arg(i).c_str(), NULL, 10);
+            if (new_state_power != state_power) {
+                state_power=new_state_power;
+            } else {
+                this_loop_effecting_change=0;
+            }
 
             if (state_power) {
                 ws2812fx.setBrightness(state_brightness);
@@ -753,15 +753,23 @@ void srv_handle_set() {
             state_brightness = tmp;
             ws2812fx.setBrightness(state_brightness);
         } else if(server.argName(i) == "fadeOn") {
-            fade_dirn = (float) strtof(server.arg(i).c_str(), NULL);
-            initial_fade_multiplier=0.005;
-            state_power = true;
-            ws2812fx.setBrightness(state_brightness);
-            syslog.logf(LOG_INFO, "Fade up: fade_dirn=%.2f", fade_dirn);
-            handle_fade();
+            if (!state_power) {
+                fade_dirn = (float) strtof(server.arg(i).c_str(), NULL);
+                initial_fade_multiplier=0.005;
+                state_power = true;
+                ws2812fx.setBrightness(state_brightness);
+                syslog.logf(LOG_INFO, "Fade up: fade_dirn=%.2f", fade_dirn);
+                handle_fade();
+            } else {
+                this_loop_effecting_change = 0;
+            }
         } else if(server.argName(i) == "fadeOff") {
-            fade_dirn = -(float) strtof(server.arg(i).c_str(), NULL);
-            syslog.logf(LOG_INFO, "Fade down: fade_dirn=%.2f", fade_dirn);
+            if (state_power) {
+                fade_dirn = -(float) strtof(server.arg(i).c_str(), NULL);
+                syslog.logf(LOG_INFO, "Fade down: fade_dirn=%.2f", fade_dirn);
+            } else {
+                this_loop_effecting_change = 0;
+            }
         }
 
         else if(server.argName(i) == "c") {
@@ -827,8 +835,17 @@ void srv_handle_set() {
             server.send(403, "text/plain", "Unrecognised command\n");
             return;
         }
+        effecting_change += this_loop_effecting_change;
     }
     server.send(200, "text/plain", "OK\n");
+    if (effecting_change) {
+        trigger_eeprom_write();
+        if (!state_power) {
+            ws2812fx.setBrightness(state_brightness);
+            state_power = true;
+        }
+        audio_active = false;
+    }
 }
 
 void srv_handle_default() {
