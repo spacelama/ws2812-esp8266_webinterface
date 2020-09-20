@@ -614,6 +614,7 @@ void handle_fade() {
 }
 
 void srv_handle_set() {
+    bool enabling = true;
     int effecting_change = 0;
     fade_dirn = 0;
     
@@ -627,10 +628,8 @@ void srv_handle_set() {
                 this_loop_effecting_change=0;
             }
 
-            if (state_power) {
-                ws2812fx.setBrightness(state_brightness);
-            } else {
-                ws2812fx.setBrightness(0);
+            if (!state_power) {
+                enabling = false;
             }
         } else if(server.argName(i) == "colours") {
             char *arg = strdup(server.arg(i).c_str());
@@ -840,11 +839,15 @@ void srv_handle_set() {
     server.send(200, "text/plain", "OK\n");
     if (effecting_change) {
         trigger_eeprom_write();
-        if (!state_power) {
-            ws2812fx.setBrightness(state_brightness);
-            state_power = true;
-        }
+    }
+    if (enabling) {
+        state_power=true;
         audio_active = false;
+    }
+    if (state_power) {
+        ws2812fx.setBrightness(state_brightness);
+    } else {
+        ws2812fx.setBrightness(0);
     }
 }
 
