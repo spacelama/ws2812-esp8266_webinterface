@@ -768,6 +768,7 @@ void srv_handle_set() {
                 syslog.logf(LOG_INFO, "Fade down: fade_dirn=%.2f", fade_dirn);
             } else {
                 this_loop_effecting_change = 0;
+                enabling = false;
             }
         }
 
@@ -841,7 +842,7 @@ void srv_handle_set() {
         trigger_eeprom_write();
     }
     if (enabling) {
-        state_power=true;
+        state_power = true;
         audio_active = false;
     }
     if (state_power) {
