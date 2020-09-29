@@ -329,6 +329,96 @@ void Fire2012();
 #include "RainbowFireworks.h"
 #include "DualLarson.h"
 
+void read_Eeprom() {
+    Serial.println("Reading eeprom");
+    EEPROM.begin(512);
+
+    // FIXME: record and reread last boot.  If rebooted too rapidly,
+    // assume an early crash, and default to a safe mode
+
+    uint8_t mode;
+    uint16_t speed;
+    uint32_t colors[3];
+
+    EEPROM.get(0, state_power); //byte
+    EEPROM.get(1, auto_cycle); //byte
+    EEPROM.get(2, state_brightness); //byte
+    EEPROM.get(3, mode); //byte
+    EEPROM.get(4, speed); //2 bytes
+    EEPROM.get(6, colors[0]); //4 bytes * 3 colours
+    EEPROM.get(10, colors[1]);
+    EEPROM.get(14, colors[2]);
+    EEPROM.get(10, last_eeprom_write_time); // 4 bytes
+//    EEPROM.get(14, last_boot_time); // 4 bytes
+
+    syslog.logf(LOG_INFO, "Read eeprom: state_power=%hhu, auto_cycle=%hhu, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                  state_power, auto_cycle, state_brightness, mode, speed, colors[0],colors[1],colors[2], last_eeprom_write_time);
+
+    //FIXME: implement a CRC or detect that we've just been flashed, and go back to default mode instead
+
+    if (state_power) {
+        ws2812fx.setBrightness(state_brightness);
+    } else {
+        ws2812fx.setBrightness(0);
+    }
+    ws2812fx.setMode(mode);
+    ws2812fx.setSpeed(speed);
+    ws2812fx.setColors(0, colors);
+}
+
+void commit_Eeprom() {
+    unsigned long now = millis();
+
+    // https://www.best-microcontroller-projects.com/arduino-eeprom.html
+    // Write to it max 10 times a day for 27 years lifetime.  Use
+    // .update to only write if unchanged.  
+    if (eeprom_write_triggered && abs(now - last_eeprom_write_time) > 60000) {
+        // FIXME: should write eeprom with the final destination
+        // results before we start fading, given the apparently
+        // high chances of it crashing and rebooting during the
+        // fade
+        uint32_t *colors = ws2812fx.getColors(0);
+        uint32_t color0=colors[0];
+        boolean power=state_power;
+
+        uint8_t r1;
+        uint8_t g1;
+        uint8_t b1;
+
+        EEPROM.begin(512);
+
+        // FIXME: record and reread last boot.  If rebooted too rapidly,
+        // assume an early crash, and default to a safe mode
+
+        if (fade_dirn != 0) {
+            if (fade_dirn > 0) {
+                HSVtoRGB(&r1,&g1,&b1, h1_saved, s1_saved, 1.0);
+                color0 = r1*256*256 + g1*256 + b1;
+            } else {
+                power=false;
+            }
+        }
+        last_eeprom_write_time = millis();
+        EEPROM.put(0, power); //byte
+        EEPROM.put(1, auto_cycle); //byte
+        EEPROM.put(2, state_brightness); //byte
+        EEPROM.put(3, ws2812fx.getMode()); //byte
+        EEPROM.put(4, ws2812fx.getSpeed()); //2 bytes
+        EEPROM.put(6, color0); //4 bytes * 3 colours
+        EEPROM.put(10, colors[1]);
+        EEPROM.put(14, colors[2]);
+        EEPROM.put(18, last_eeprom_write_time); // 4 bytes
+//    EEPROM.put(14, last_boot_time); // 4 bytes
+
+        EEPROM.commit();
+
+        syslog.logf(LOG_INFO, "Write eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                    state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
+
+        eeprom_write_triggered = false;
+    }
+}
+
 /* #####################################################
    #  Webserver Functions
    ##################################################### */
@@ -499,7 +589,6 @@ void pollButtons() {
         v1_saved=v1*state_brightness/255;
         state_brightness=255;
         state_power=true;
-        ws2812fx.setBrightness(state_brightness);
         HSVtoRGB(&r1,&g1,&b1, h1, s1, v1);
 //        syslog.logf(LOG_INFO, "r,g,b=%u,%u,%u", r1,g1,b1);
         color = r1*256*256 + g1*256 + b1;
@@ -509,6 +598,7 @@ void pollButtons() {
 
 //        syslog.logf(LOG_INFO, "set->colors[]=%lu,%lu,%lu", colors[0],colors[1],colors[2]);
         ws2812fx.setColors(0, colors);
+        ws2812fx.setBrightness(state_brightness);
         ws2812fx.trigger();
 
         trigger_eeprom_write();
@@ -580,19 +670,19 @@ void handle_fade() {
         b1 =  colors[0]        & 0xff;
         RGBtoHSV( r1, g1, b1, &h1, &s1, &v1 );
     }
-    hsv_read_time=millis();
+    hsv_read_time = millis();
 
     v1 *= initial_fade_multiplier;
     v1 += (v1/20)/fade_dirn;
-    initial_fade_multiplier=1;
+    initial_fade_multiplier = 1;
     if (v1 > 1) {
-        v1=1;
-        fade_dirn=0;
+        v1 = 1;
+        fade_dirn = 0;
         ws2812fx.setBrightness(state_brightness);
     } else if ((fade_dirn < 0) && (v1 <= 0.005)) {
-        v1=1;
-        fade_dirn=0;
-        state_power=false;
+        v1 = 1;
+        fade_dirn = 0;
+        state_power = false;
         ws2812fx.setBrightness(0);
     } else {
         ws2812fx.setBrightness(state_brightness);
@@ -600,9 +690,9 @@ void handle_fade() {
 
     syslog.logf(LOG_INFO, "setting brightness %0.2f to %0.3f", fade_dirn, v1);
     delay(1); // give time for syslog UDP buffer
-    h1_saved=h1;
-    s1_saved=s1;
-    v1_saved=v1; //*state_brightness/255;
+    h1_saved = h1;
+    s1_saved = s1;
+    v1_saved = v1; //*state_brightness/255;
 //    state_brightness=255;
 //        ws2812fx.setBrightness(state_brightness);
     HSVtoRGB(&r1,&g1,&b1, h1, s1, v1);
@@ -610,7 +700,7 @@ void handle_fade() {
     color = r1*256*256 + g1*256 + b1;
 //        syslog.logf(LOG_INFO, "color=%lu", color);
 
-    colors[0]=color;
+    colors[0] = color;
 
 //        syslog.logf(LOG_INFO, "set->colors[]=%lu,%lu,%lu", colors[0],colors[1],colors[2]);
     ws2812fx.setColors(0, colors);
@@ -770,6 +860,7 @@ void srv_handle_set() {
             if (state_power) {
                 fade_dirn = -(float) strtof(server.arg(i).c_str(), NULL);
                 syslog.logf(LOG_INFO, "Fade down: fade_dirn=%.2f", fade_dirn);
+                commit_Eeprom(); // before the first handle_fade() has fiddled with vf
             } else {
                 this_loop_effecting_change = 0;
                 enabling = false;
@@ -913,69 +1004,6 @@ void reverse_show(WS2812FX *strip) {
     strip->setPixels(numPixels, pixels_p1_reverse, false);
     strip->show();
     strip->setPixels(numPixels, pixels, false); // swap back to normal position
-}
-
-void read_Eeprom() {
-    Serial.println("Reading eeprom");
-    EEPROM.begin(512);
-
-    // FIXME: record and reread last boot.  If rebooted too rapidly,
-    // assume an early crash, and default to a safe mode
-
-    uint8_t mode;
-    uint16_t speed;
-    uint32_t colors[3];
-
-    EEPROM.get(0, state_power); //byte
-    EEPROM.get(1, auto_cycle); //byte
-    EEPROM.get(2, state_brightness); //byte
-    EEPROM.get(3, mode); //byte
-    EEPROM.get(4, speed); //2 bytes
-    EEPROM.get(6, colors[0]); //4 bytes * 3 colours
-    EEPROM.get(10, colors[1]);
-    EEPROM.get(14, colors[2]);
-    EEPROM.get(10, last_eeprom_write_time); // 4 bytes
-//    EEPROM.get(14, last_boot_time); // 4 bytes
-
-    syslog.logf(LOG_INFO, "Read eeprom: state_power=%hhu, auto_cycle=%hhu, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
-                  state_power, auto_cycle, state_brightness, mode, speed, colors[0],colors[1],colors[2], last_eeprom_write_time);
-
-    //FIXME: implement a CRC or detect that we've just been flashed, and go back to default mode instead
-
-    if (state_power) {
-        ws2812fx.setBrightness(state_brightness);
-    } else {
-        ws2812fx.setBrightness(0);
-    }
-    ws2812fx.setMode(mode);
-    ws2812fx.setSpeed(speed);
-    ws2812fx.setColors(0, colors);
-}
-
-void write_Eeprom() {
-    uint32_t *colors = ws2812fx.getColors(0);
-
-    EEPROM.begin(512);
-
-    // FIXME: record and reread last boot.  If rebooted too rapidly,
-    // assume an early crash, and default to a safe mode
-
-    last_eeprom_write_time = millis();
-    EEPROM.put(0, state_power); //byte
-    EEPROM.put(1, auto_cycle); //byte
-    EEPROM.put(2, state_brightness); //byte
-    EEPROM.put(3, ws2812fx.getMode()); //byte
-    EEPROM.put(4, ws2812fx.getSpeed()); //2 bytes
-    EEPROM.put(6, colors[0]); //4 bytes * 3 colours
-    EEPROM.put(10, colors[1]);
-    EEPROM.put(14, colors[2]);
-    EEPROM.put(18, last_eeprom_write_time); // 4 bytes
-//    EEPROM.put(14, last_boot_time); // 4 bytes
-
-    EEPROM.commit();
-
-    syslog.logf(LOG_INFO, "Write eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
-                state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
 }
 
 boolean pins_reassigned = false;
@@ -1163,14 +1191,9 @@ boolean check_audio(void) {
 void loop_stub(void) {
     unsigned long now = millis();
 
+    commit_Eeprom();
+
     if (!check_audio()) {
-        // https://www.best-microcontroller-projects.com/arduino-eeprom.html
-        // Write to it max 10 times a day for 27 years lifetime.  Use
-        // .update to only write if unchanged.  
-        if (eeprom_write_triggered && (fade_dirn == 0) && abs(now - last_eeprom_write_time) > 60000) {
-            write_Eeprom();
-            eeprom_write_triggered = false;
-        }
         if (auto_cycle && (now - auto_last_change > 10000)) { // cycle effect mode every 10 seconds
             uint8_t next_mode = (ws2812fx.getMode() + 1) % ws2812fx.getModeCount();
             if(sizeof(myModes) > 0) { // if custom list of modes exists
