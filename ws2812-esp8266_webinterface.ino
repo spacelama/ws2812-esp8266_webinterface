@@ -76,8 +76,8 @@ ESP8266WebServer server(80);
 // QUICKFIX...See https://github.com/esp8266/Arduino/issues/263
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
-#define min3(a,b,c) ((a)<(min(b,c))?(a):(min(b,c)))
-#define max3(a,b,c) ((a)>(max(b,c))?(a):(max(b,c)))
+#define min3(a,b,c) ((a)<min((b),(c))?(a):min((b),(c)))
+#define max3(a,b,c) ((a)>max((b),(c))?(a):max((b),(c)))
 
 #define DEFAULT_COLOR 0xFFAA88
 #define DEFAULT_BRIGHTNESS 128 // 16
@@ -135,23 +135,23 @@ unsigned long hsv_read_time = 0;
 
 void RGBtoHSV( uint8_t r, uint8_t g, uint8_t b, float *hf, float *sf, float *vf )
 {
-    float min, max, delta;
+    float cmin, cmax, delta;
     float rf, gf, bf;
 
     rf = float(r)/255;
     gf = float(g)/255;
     bf = float(b)/255;
 
-    min = min3( rf, gf, bf );
-    max = max3( rf, gf, bf );
-    *vf = max;				// v
+    cmin = min3( rf, gf, bf );
+    cmax = max3( rf, gf, bf );
+    *vf = cmax;				// v
 
-    delta = max - min;
+    delta = cmax - cmin;
 //    syslog.logf(LOG_INFO, "min,max,delta = %f,%f,%f\n", min,max,delta);
 
 
-    if( max != 0 )
-        *sf = delta / max;		// s
+    if( cmax != 0 )
+        *sf = delta / cmax;		// s
     else {
         // r = g = b = 0		// s = 0, v is undefined
         *sf = 0;
@@ -161,17 +161,21 @@ void RGBtoHSV( uint8_t r, uint8_t g, uint8_t b, float *hf, float *sf, float *vf 
 
     if (delta == 0)
         *hf = 0;
-    else if( rf == max )
-        *hf = gf - bf / delta;           // between yellow & magenta
-    else if( gf == max )
+    else if( rf == cmax )
+        *hf = ( gf - bf ) / delta;          // between yellow & magenta
+    else if( gf == cmax )
         *hf = 2 + ( bf - rf ) / delta;	// between cyan & yellow
-    else
+    else if( bf == cmax )
         *hf = 4 + ( rf - gf ) / delta;	// between magenta & cyan
+    else {
+        syslog.logf(LOG_INFO, "FIXME: compare floating points better: rf, gf, bf, cmax= %f %f %f %f", rf,gf,bf, cmax);
+        *hf = 0;
+    }
 
     *hf *= 60;				// 0-360 degrees
     if( *hf < 0 )
         *hf += 360;
-    syslog.logf(LOG_INFO,"rf,gf,bf, min,max, delta, hf,sf,vf->%0.3f,%0.3f,%0.3f, %0.3f,%0.3f, %0.3f, %0.3f,%0.3f,%0.3f", rf,gf,bf, min,max, delta, *hf,*sf,*vf);
+    syslog.logf(LOG_INFO,"rf,gf,bf, cmin,cmax, delta, hf,sf,vf->%0.3f,%0.3f,%0.3f, %0.3f,%0.3f, %0.3f, %0.3f,%0.3f,%0.3f", rf,gf,bf, cmin,cmax, delta, *hf,*sf,*vf);
 }
 
 void HSVtoRGB( uint8_t *r, uint8_t *g, uint8_t *b, float hf, float sf, float vf )
