@@ -367,55 +367,59 @@ void read_Eeprom() {
 }
 
 void commit_Eeprom() {
+    // FIXME: should write eeprom with the final destination
+    // results before we start fading, given the apparently
+    // high chances of it crashing and rebooting during the
+    // fade
+    uint32_t *colors = ws2812fx.getColors(0);
+    uint32_t color0=colors[0];
+    boolean power=state_power;
+
+    uint8_t r1;
+    uint8_t g1;
+    uint8_t b1;
+
+    EEPROM.begin(512);
+
+    // FIXME: record and reread last boot.  If rebooted too rapidly,
+    // assume an early crash, and default to a safe mode
+
+    if (fade_dirn != 0) {
+        if (fade_dirn > 0) {
+            HSVtoRGB(&r1,&g1,&b1, h1_saved, s1_saved, 1.0);
+            color0 = r1*256*256 + g1*256 + b1;
+        } else {
+            power=false;
+        }
+    }
+    last_eeprom_write_time = millis();
+    EEPROM.put(0, power); //byte
+    EEPROM.put(1, auto_cycle); //byte
+    EEPROM.put(2, state_brightness); //byte
+    EEPROM.put(3, ws2812fx.getMode()); //byte
+    EEPROM.put(4, ws2812fx.getSpeed()); //2 bytes
+    EEPROM.put(6, color0); //4 bytes * 3 colours
+    EEPROM.put(10, colors[1]);
+    EEPROM.put(14, colors[2]);
+    EEPROM.put(18, last_eeprom_write_time); // 4 bytes
+//    EEPROM.put(14, last_boot_time); // 4 bytes
+
+    EEPROM.commit();
+
+    syslog.logf(LOG_INFO, "Write eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
+
+    eeprom_write_triggered = false;
+}
+
+void write_Eeprom() {
     unsigned long now = millis();
 
     // https://www.best-microcontroller-projects.com/arduino-eeprom.html
     // Write to it max 10 times a day for 27 years lifetime.  Use
     // .update to only write if unchanged.  
     if (eeprom_write_triggered && abs(now - last_eeprom_write_time) > 60000) {
-        // FIXME: should write eeprom with the final destination
-        // results before we start fading, given the apparently
-        // high chances of it crashing and rebooting during the
-        // fade
-        uint32_t *colors = ws2812fx.getColors(0);
-        uint32_t color0=colors[0];
-        boolean power=state_power;
-
-        uint8_t r1;
-        uint8_t g1;
-        uint8_t b1;
-
-        EEPROM.begin(512);
-
-        // FIXME: record and reread last boot.  If rebooted too rapidly,
-        // assume an early crash, and default to a safe mode
-
-        if (fade_dirn != 0) {
-            if (fade_dirn > 0) {
-                HSVtoRGB(&r1,&g1,&b1, h1_saved, s1_saved, 1.0);
-                color0 = r1*256*256 + g1*256 + b1;
-            } else {
-                power=false;
-            }
-        }
-        last_eeprom_write_time = millis();
-        EEPROM.put(0, power); //byte
-        EEPROM.put(1, auto_cycle); //byte
-        EEPROM.put(2, state_brightness); //byte
-        EEPROM.put(3, ws2812fx.getMode()); //byte
-        EEPROM.put(4, ws2812fx.getSpeed()); //2 bytes
-        EEPROM.put(6, color0); //4 bytes * 3 colours
-        EEPROM.put(10, colors[1]);
-        EEPROM.put(14, colors[2]);
-        EEPROM.put(18, last_eeprom_write_time); // 4 bytes
-//    EEPROM.put(14, last_boot_time); // 4 bytes
-
-        EEPROM.commit();
-
-        syslog.logf(LOG_INFO, "Write eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
-                    state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
-
-        eeprom_write_triggered = false;
+        commit_Eeprom();
     }
 }
 
@@ -852,6 +856,7 @@ void srv_handle_set() {
                 state_power = true;
                 ws2812fx.setBrightness(state_brightness);
                 syslog.logf(LOG_INFO, "Fade up: fade_dirn=%.2f", fade_dirn);
+                commit_Eeprom(); // before the first handle_fade() has fiddled with vf
                 handle_fade();
             } else {
                 this_loop_effecting_change = 0;
@@ -1191,7 +1196,7 @@ boolean check_audio(void) {
 void loop_stub(void) {
     unsigned long now = millis();
 
-    commit_Eeprom();
+    write_Eeprom();
 
     if (!check_audio()) {
         if (auto_cycle && (now - auto_last_change > 10000)) { // cycle effect mode every 10 seconds
