@@ -1,14 +1,15 @@
 #ifndef BOILERPLATE_H
 #define BOILERPLATE_H
 
-#define _SSID "Asio2.4"
-#define _SSID2 "EdimaxWiFiPLC"
-#define _PWD "EnrotalphEg4ChrebfeOgEr1"
+// #define _PWD "EnrotalphEg4ChrebfeOgEr1"
 
-#define _SYSLOG "192.168.1.17"
+// #define _SYSLOG "192.168.1.17"
 
-#define _HOSTNAME "ledstrip"
-#define _OTA_PWD "4quitVojwigig"
+// #define _SSID "Asio2.4"
+// #define _SSID2 "EdimaxWiFiPLC"
+// #define _HOSTNAME "ledstrip"
+
+// #define _OTA_PWD "4quitVojwigig"
 
 void setup_stub();
 void loop_stub();
