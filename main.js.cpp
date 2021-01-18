@@ -64,6 +64,18 @@ window.addEventListener('DOMContentLoaded', (event) => {
     submitVal('C', selectedColor);
   });
 
+  // setup the canvas click-release listener
+  colorCanvas.addEventListener('touchend', (event) => {
+    var imageData = colorCanvas.getContext('2d').getImageData(event.offsetX, event.offsetY, 1, 1);
+
+    var selectedColor = 'rgb(' + imageData.data[0] + ',' + imageData.data[1] + ',' + imageData.data[2] + ')'; 
+    //console.log('click: ' + event.offsetX + ', ' + event.offsetY + ', ' + selectedColor);
+    document.getElementById('color-value').value = selectedColor;
+
+    selectedColor = imageData.data[0] * 65536 + imageData.data[1] * 256 + imageData.data[2];
+    submitVal('C', selectedColor);
+  });
+
   // get list of modes from ESP
   var xhttp = new XMLHttpRequest();
   xhttp.onreadystatechange = function() {
