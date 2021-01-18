@@ -43,7 +43,7 @@
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <EEPROM.h>
+#include <ESP_EEPROM.h>
 #include <WiFiUdp.h>
 #include <Adafruit_NeoPixel.h>
 #include "FastLED.h" // be sure to install and include the FastLED lib
@@ -94,6 +94,7 @@ boolean auto_cycle = false;
 boolean state_power = true;
 uint8_t state_brightness = DEFAULT_BRIGHTNESS;
 unsigned long last_eeprom_write_time = 0;
+unsigned long reboot_at = 0;
 boolean eeprom_write_triggered = false;
 
 // create an instance of one virtual strip and two physical strips.
@@ -251,23 +252,132 @@ String contents_row(String title, String params) {
     return message;
 }
 
-String handleRoot_stub() {
+void handleRoot() {
     server.send_P(200,"text/html", index_html);
-    return "NA";
 }
 
 String http_uptime_stub() {
     return "";
 }
 
+void read_Eeprom() {
+    Serial.println("Reading eeprom");
+    EEPROM.begin(18);
+
+    // FIXME: record and reread last boot.  If rebooted too rapidly,
+    // assume an early crash, and default to a safe mode
+
+    uint8_t mode;
+    uint16_t speed;
+    uint32_t colors[3];
+
+    EEPROM.get(0, state_power); //byte
+    EEPROM.get(1, auto_cycle); //byte
+    EEPROM.get(2, state_brightness); //byte
+    EEPROM.get(3, mode); //byte
+    EEPROM.get(4, speed); //2 bytes
+    EEPROM.get(6, colors[0]); //4 bytes * 3 colours
+    EEPROM.get(10, colors[1]);
+    EEPROM.get(14, colors[2]);
+//    EEPROM.get(18, last_eeprom_write_time); // 4 bytes
+//    EEPROM.get(14, last_boot_time); // 4 bytes
+
+    Serial.printf("Read eeprom: state_power=%hhu, auto_cycle=%hhu, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                  state_power, auto_cycle, state_brightness, mode, speed, colors[0],colors[1],colors[2], last_eeprom_write_time);
+    syslog.logf(LOG_INFO, "Read eeprom: state_power=%hhu, auto_cycle=%hhu, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                  state_power, auto_cycle, state_brightness, mode, speed, colors[0],colors[1],colors[2], last_eeprom_write_time);
+
+    //FIXME: implement a CRC or detect that we've just been flashed, and go back to default mode instead
+
+    if (state_power) {
+        ws2812fx.setBrightness(state_brightness);
+    } else {
+        ws2812fx.setBrightness(0);
+    }
+    ws2812fx.setMode(mode);
+    ws2812fx.setSpeed(speed);
+    ws2812fx.setColors(0, colors);
+}
+
+void commit_Eeprom() {
+    // FIXME: should write eeprom with the final destination
+    // results before we start fading, given the apparently
+    // high chances of it crashing and rebooting during the
+    // fade
+    uint32_t *colors = ws2812fx.getColors(0);
+    uint32_t color0=colors[0];
+    boolean power=state_power;
+
+    uint8_t r1;
+    uint8_t g1;
+    uint8_t b1;
+
+    EEPROM.begin(18);
+
+    // FIXME: record and reread last boot.  If rebooted too rapidly,
+    // assume an early crash, and default to a safe mode
+
+    if (fade_dirn != 0) {
+        if (fade_dirn > 0) {
+            HSVtoRGB(&r1,&g1,&b1, h1_saved, s1_saved, 1.0);
+            color0 = r1*256*256 + g1*256 + b1;
+        } else {
+            power=false;
+        }
+    }
+    last_eeprom_write_time = millis();
+    EEPROM.put(0, power); //byte
+    EEPROM.put(1, auto_cycle); //byte
+    EEPROM.put(2, state_brightness); //byte
+    EEPROM.put(3, ws2812fx.getMode()); //byte
+    EEPROM.put(4, ws2812fx.getSpeed()); //2 bytes
+    EEPROM.put(6, color0); //4 bytes * 3 colours
+    EEPROM.put(10, colors[1]);
+    EEPROM.put(14, colors[2]);
+//    EEPROM.put(18, last_eeprom_write_time); // 4 bytes
+//    EEPROM.put(14, last_boot_time); // 4 bytes
+
+    EEPROM.commit();
+
+    syslog.logf(LOG_INFO, "Write eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
+
+    eeprom_write_triggered = false;
+}
+
+void write_Eeprom() {
+    unsigned long now = millis();
+
+    // https://www.best-microcontroller-projects.com/arduino-eeprom.html
+    // Write to it max 10 times a day for 27 years lifetime.  Use
+    // .update to only write if unchanged.  
+    if (eeprom_write_triggered && abs(now - last_eeprom_write_time) > 60000) {
+        commit_Eeprom();
+    }
+}
+
 void trigger_eeprom_write(void) {
+    uint32_t *colors = ws2812fx.getColors(0);
+
     eeprom_write_triggered=true;
     syslog.logf(LOG_INFO, "Triggering eeprom for future write");
+    syslog.logf(LOG_INFO, "    : state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
 }
 
 uint16_t mode_reboot(void) {
-    reboot();
-    return 0;
+    WS2812FX::Segment* seg = ws2812fx.getSegment(); // get the current segment
+    uint16_t seglen = seg->stop - seg->start + 1;
+
+    ws2812fx.setMode(current_mode);  // mode prior to being reset
+                                     // by the user calling a
+                                     // function or pressing a
+                                     // button
+    syslog.logf(LOG_INFO, "Rebooting upon request.  Mode will reset to %hhu", ws2812fx.getMode());
+    Serial.printf("Rebooting upon request.  Mode will reset to %hhu\n", ws2812fx.getMode());
+    write_Eeprom();  // if triggered
+    reboot_at=millis()+100;
+    return(seg->speed / seglen);
 }
 
 uint16_t reset_default(void) {
@@ -328,100 +438,6 @@ void Fire2012();
 #include "ws2812fx_custom_FastLED.h"
 #include "RainbowFireworks.h"
 #include "DualLarson.h"
-
-void read_Eeprom() {
-    Serial.println("Reading eeprom");
-    EEPROM.begin(512);
-
-    // FIXME: record and reread last boot.  If rebooted too rapidly,
-    // assume an early crash, and default to a safe mode
-
-    uint8_t mode;
-    uint16_t speed;
-    uint32_t colors[3];
-
-    EEPROM.get(0, state_power); //byte
-    EEPROM.get(1, auto_cycle); //byte
-    EEPROM.get(2, state_brightness); //byte
-    EEPROM.get(3, mode); //byte
-    EEPROM.get(4, speed); //2 bytes
-    EEPROM.get(6, colors[0]); //4 bytes * 3 colours
-    EEPROM.get(10, colors[1]);
-    EEPROM.get(14, colors[2]);
-    EEPROM.get(10, last_eeprom_write_time); // 4 bytes
-//    EEPROM.get(14, last_boot_time); // 4 bytes
-
-    syslog.logf(LOG_INFO, "Read eeprom: state_power=%hhu, auto_cycle=%hhu, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
-                  state_power, auto_cycle, state_brightness, mode, speed, colors[0],colors[1],colors[2], last_eeprom_write_time);
-
-    //FIXME: implement a CRC or detect that we've just been flashed, and go back to default mode instead
-
-    if (state_power) {
-        ws2812fx.setBrightness(state_brightness);
-    } else {
-        ws2812fx.setBrightness(0);
-    }
-    ws2812fx.setMode(mode);
-    ws2812fx.setSpeed(speed);
-    ws2812fx.setColors(0, colors);
-}
-
-void commit_Eeprom() {
-    // FIXME: should write eeprom with the final destination
-    // results before we start fading, given the apparently
-    // high chances of it crashing and rebooting during the
-    // fade
-    uint32_t *colors = ws2812fx.getColors(0);
-    uint32_t color0=colors[0];
-    boolean power=state_power;
-
-    uint8_t r1;
-    uint8_t g1;
-    uint8_t b1;
-
-    EEPROM.begin(512);
-
-    // FIXME: record and reread last boot.  If rebooted too rapidly,
-    // assume an early crash, and default to a safe mode
-
-    if (fade_dirn != 0) {
-        if (fade_dirn > 0) {
-            HSVtoRGB(&r1,&g1,&b1, h1_saved, s1_saved, 1.0);
-            color0 = r1*256*256 + g1*256 + b1;
-        } else {
-            power=false;
-        }
-    }
-    last_eeprom_write_time = millis();
-    EEPROM.put(0, power); //byte
-    EEPROM.put(1, auto_cycle); //byte
-    EEPROM.put(2, state_brightness); //byte
-    EEPROM.put(3, ws2812fx.getMode()); //byte
-    EEPROM.put(4, ws2812fx.getSpeed()); //2 bytes
-    EEPROM.put(6, color0); //4 bytes * 3 colours
-    EEPROM.put(10, colors[1]);
-    EEPROM.put(14, colors[2]);
-    EEPROM.put(18, last_eeprom_write_time); // 4 bytes
-//    EEPROM.put(14, last_boot_time); // 4 bytes
-
-    EEPROM.commit();
-
-    syslog.logf(LOG_INFO, "Write eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
-                state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
-
-    eeprom_write_triggered = false;
-}
-
-void write_Eeprom() {
-    unsigned long now = millis();
-
-    // https://www.best-microcontroller-projects.com/arduino-eeprom.html
-    // Write to it max 10 times a day for 27 years lifetime.  Use
-    // .update to only write if unchanged.  
-    if (eeprom_write_triggered && abs(now - last_eeprom_write_time) > 60000) {
-        commit_Eeprom();
-    }
-}
 
 /* #####################################################
    #  Webserver Functions
@@ -520,7 +536,7 @@ void pollButtons() {
         triple_clicked = false;
     }
     if (mainButton.released()) {
-        syslog.log(LOG_INFO, "main button released\n");
+        syslog.log(LOG_INFO, "main button released");
         if (!long_pressed && !double_clicked && !triple_clicked) {
             time_button_released = millis();
         }
@@ -885,7 +901,9 @@ void srv_handle_set() {
         } else if(server.argName(i) == "C") {
             uint32_t tmp = (uint32_t) strtol(server.arg(i).c_str(), NULL, 10);
             if(tmp >= 0x000000 && tmp <= 0xFFFFFF) {
-                ws2812fx.setColor(tmp); //FIXME: make this the second color, if there was a cursor movement between press and release https://stackoverflow.com/questions/6042202/how-to-distinguish-mouse-click-and-drag
+                uint32_t colors[3] = {ws2812fx.getColor(),tmp,0};
+                //set the second color, if there was a cursor movement between press and release https://stackoverflow.com/questions/6042202/how-to-distinguish-mouse-click-and-drag
+                ws2812fx.setColors(0,colors);
             }
             uint32_t color = ws2812fx.getColor();
             uint8_t r = (color >> 16) & 0xff;
@@ -1014,7 +1032,7 @@ void reverse_show(WS2812FX *strip) {
 boolean pins_reassigned = false;
 // update the physical strips's LEDs
 void myCustomShow(void) {
-    Serial.println("custom show called now");
+//    Serial.println("custom show called now");
     reverse_show(&ws2812fx_p1);
     ws2812fx_p2.show();
     if (!pins_reassigned) {
@@ -1082,8 +1100,6 @@ void setup_stub(void) {
   
     ledRamp(led_range,0,1000,30);
 
-//    server.on("/", handleRoot);
-
     ws2812fx.setCustomMode(0, F("Fire2012"), myCustomEffect);
     ws2812fx.setCustomMode(1, F("Dual Larson"), dualLarson);
     ws2812fx.setCustomMode(2, F("Rainbow Fireworks"), rainbowFireworks);
@@ -1126,6 +1142,7 @@ void setup_stub(void) {
 //    wifi_setup();
  
     Serial.println("HTTP server extra setup");
+    server.on("/", handleRoot);
     server.on("/main.js", srv_handle_main_js);
     server.on("/modes", srv_handle_modes);
     server.on("/set", srv_handle_set);
@@ -1196,6 +1213,10 @@ boolean check_audio(void) {
 void loop_stub(void) {
     unsigned long now = millis();
 
+    if (reboot_at && (now > reboot_at)) {
+        reboot();
+    }
+
     write_Eeprom();
 
     if (!check_audio()) {
@@ -1210,7 +1231,7 @@ void loop_stub(void) {
                 }
             }
             ws2812fx.setMode(next_mode);
-            syslog.logf("mode is %s", ws2812fx.getModeName(ws2812fx.getMode()));
+            syslog.logf(LOG_INFO, "mode is %s", ws2812fx.getModeName(ws2812fx.getMode()));
             auto_last_change = now;
         }
     }
