@@ -13,6 +13,7 @@
 #include "template.h"
 
 String debug = "";
+String syslog_buffer = "";
 
 String TEMPLATE_VERSION = "$Revision$";
 extern String CODE_VERSION;
@@ -55,7 +56,6 @@ int led_range = 100;
 extern void setup_stub();
 extern void loop_stub();
 extern String http_uptime_stub();
-extern String handleRoot_stub();
 
 /********************************************************
 /*  Debug Print                                         *
@@ -184,14 +184,6 @@ void http_wifi() {
 /*     digitalWrite(relayPin, LOW);  // turn off relay with voltage LOW */
 /* } */
 
-//FIXME: might want to remove this
-void handleRoot() {
-    String message = handleRoot_stub();
-    if (message != "NA") {
-        server.send(200, "text/html", message);
-    }
-}
-
 void handleNotFound(){
     digitalWrite(ONBOARD_LED_PIN, 1);
     String message = "File Not Found\n\n";
@@ -216,7 +208,7 @@ void trigger_wifi_failover() {
     if (++wifi_index > 1) {
         wifi_index=0;
     }
-    syslog.logf(LOG_WARNING, "Failing over to wifi index %i %s", wifi_index, ssid[wifi_index].c_str());
+    syslog_buffer="Failing over to wifi index "+String(wifi_index)+" "+ssid[wifi_index];
 }
 
 void increment_wifi_failover() {
@@ -241,7 +233,7 @@ void execute_wifi_failover() {
     Serial.println("Execute wifi failover");
     triggered_wifi_failover=0;
     WiFi.begin(ssid[wifi_index], password);
-    syslog.logf(LOG_WARNING, "Failed over to wifi index %i %s", wifi_index, ssid[wifi_index].c_str());
+    syslog_buffer="Failed over to wifi index "+String(wifi_index)+ssid[wifi_index];
 }
 
 int getArgValue(String name)
@@ -250,6 +242,14 @@ int getArgValue(String name)
         if(server.argName(i) == name)
             return server.arg(i).toInt();
     return -1;
+}
+
+String getArgValueStr(String name)
+{
+    for (uint8_t i = 0; i < server.args(); i++)
+        if(server.argName(i) == name)
+            return server.arg(i);
+    return "";
 }
 
 /********************************************************
@@ -305,8 +305,11 @@ void eventWiFi(WiFiEvent_t event) {
     
       case WIFI_EVENT_STAMODE_GOT_IP:
           dbg_printf("[WiFi] %d, Got IP: %s\n", event, WiFi.localIP().toString().c_str());
+          if (syslog_buffer != "") {
+              syslog.log(LOG_WARNING, syslog_buffer.c_str());
+          }
+          syslog.logf(LOG_INFO, "[WiFi] %d, Got IP: %s, using wifi index %i %s", event, WiFi.localIP().toString().c_str(), wifi_index, ssid[wifi_index].c_str());
           break;
-    
       case WIFI_EVENT_STAMODE_DHCP_TIMEOUT:
           dbg_printf("[WiFi] %d, DHCP Timeout\n", event);
           break;
@@ -389,7 +392,7 @@ void setup(void){
 
     delay(1500);
 
-    server.on("/", handleRoot);
+//    server.on("/", handleRoot);
 
     server.on("/uptime", http_uptime);
 
@@ -416,6 +419,9 @@ void setup(void){
     ArduinoOTA.setHostname(hostname.c_str());
     ArduinoOTA.onStart([]() { // switch off PWM during upgrade
             analogWrite(ONBOARD_LED_PIN,0);
+            // FIXME: If using https://github.com/xoseperez/eeprom_rotate:
+            // EEPROM.rotate(false);
+            // EEPROM.commit();
         });
 
     ArduinoOTA.onEnd([]() { // do a fancy thing with our board led at end
@@ -438,6 +444,8 @@ void setup(void){
             else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
             else if (error == OTA_END_ERROR) Serial.println("End Failed");
             ledErrorBlink(10, 500,200); 
+            // FIXME: If using https://github.com/xoseperez/eeprom_rotate:
+            // EEPROM.rotate(true);   // Superfluous one presumes, if just about to reboot
             ESP.restart();
         });
 
