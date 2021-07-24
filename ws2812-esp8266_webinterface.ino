@@ -52,7 +52,7 @@
 
 #include <WS2812FX.h>
 #include "template.h"
-String CODE_VERSION = "$Revision$";
+String CODE_VERSION = "$Revision: 1.21 $";
 
 #include <Syslog.h>
 
