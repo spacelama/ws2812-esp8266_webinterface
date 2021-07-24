@@ -87,8 +87,11 @@ ESP8266WebServer server(80);
 uint8_t current_mode;
 unsigned long auto_last_change = 0;
 String modes = "";
-//uint8_t myModes[] = {59,60,61,58,0,62}; // *** optionally create a custom list of effect/mode numbers
-uint8_t myModes[] = {}; // *** optionally create a custom list of effect/mode numbers
+//const int increment_from=35;
+uint8_t myModes[] =  // [increment_from+62] =
+    // WARNING: 1st and 3rd positions must remain fixed because of external callers (flashLightsNotification,turnNightLightsOn), plus DEFAULT_MODE is MODE_STATIC which wants to be 0 because of the current way the myModes works
+{0,59,2,60,61,58,57,24,25,23,22,21,20,19,56,55,2,15,12,33,11,13,14,17,18,43,44,45,46,47,48,49,62}; // *** optionally create a custom list of effect/mode numbers
+//uint8_t myModes[] = {}; // *** optionally create a custom list of effect/mode numbers
 boolean auto_cycle = false;
 
 boolean state_power = true;
@@ -382,7 +385,7 @@ uint16_t mode_reboot(void) {
 
 uint16_t reset_default(void) {
     auto_cycle = false;
-    state_power = true;
+//    state_power = true;  // whoever called us will turn power on instead
     ws2812fx.setMode(DEFAULT_MODE);
     uint32_t colors[3] = {DEFAULT_COLOR,0,0};
     ws2812fx.setColors(0,colors);
@@ -399,6 +402,9 @@ uint16_t reset_default(void) {
  * Build <li> string for all modes.
  */
 void modes_setup() {
+    /* for (uint8_t i=increment_from; i < sizeof(myModes); i++){ */
+    /*     myModes[i]=i-increment_from-1; */
+    /* } */
     modes = "";
     uint8_t num_modes = sizeof(myModes) > 0 ? sizeof(myModes) : ws2812fx.getModeCount();
     for(uint8_t i=0; i < num_modes; i++) {
@@ -728,6 +734,8 @@ void handle_fade() {
 }
 
 void srv_handle_set() {
+    logQuery();
+
     bool enabling = true;
     int effecting_change = 0;
     fade_dirn = 0;
@@ -971,18 +979,24 @@ void srv_handle_set() {
 }
 
 void srv_handle_default() {
+    logQuery();
+
     server.sendHeader("Location", "/",true);   //Redirect to our html web page  
     server.send(302, "text/plain","Resetting to default\n");
     reset_default();
 }
 
 void srv_handle_off() {
+    logQuery();
+
     server.sendHeader("Location", "/",true);   //Redirect to our html web page  
     server.send(302, "text/plain","Turning Off\n");
     ledsOff();
 }
 
 void srv_handle_on() {
+    logQuery();
+
     server.sendHeader("Location", "/",true);   //Redirect to our html web page  
     server.send(302, "text/plain","Turning On\n");
     ledsOn();
@@ -1042,6 +1056,21 @@ void myCustomShow(void) {
         ws2812fx_p2.setPin(LED_PIN_P2);
     }
 //    syslog.logf(LOG_INFO, "time: %d\n", millis());
+}
+
+void http_start_stub() {
+    Serial.println("HTTP server extra setup");
+    server.on("/", handleRoot);
+    server.on("/main.js", srv_handle_main_js);
+    server.on("/modes", srv_handle_modes);
+    server.on("/set", srv_handle_set);
+    server.on("/get", srv_handle_get);
+    server.on("/default", srv_handle_default);
+    server.on("/off", srv_handle_off);
+    server.on("/on", srv_handle_on);
+//    server.onNotFound(srv_handle_not_found);
+
+    audio_listen_port.begin(audio_listen_localPort);
 }
 
 void setup_stub(void) {
@@ -1141,19 +1170,6 @@ void setup_stub(void) {
 //    Serial.println("Wifi setup");
 //    wifi_setup();
  
-    Serial.println("HTTP server extra setup");
-    server.on("/", handleRoot);
-    server.on("/main.js", srv_handle_main_js);
-    server.on("/modes", srv_handle_modes);
-    server.on("/set", srv_handle_set);
-    server.on("/get", srv_handle_get);
-    server.on("/default", srv_handle_default);
-    server.on("/off", srv_handle_off);
-    server.on("/on", srv_handle_on);
-//    server.onNotFound(srv_handle_not_found);
-
-    audio_listen_port.begin(audio_listen_localPort);
-
     ledRamp(0,led_range,80,30);
 
     // Port defaults to 8266
