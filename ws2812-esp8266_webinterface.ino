@@ -118,6 +118,8 @@ bool double_clicked = false;
 bool triple_clicked = false;
 unsigned long time_button_released = 0;
 
+bool disabled_at_boot = false;
+
 #define LONG_CLICK 500
 #define DOUBLE_CLICK 450
 
@@ -268,7 +270,8 @@ void read_Eeprom() {
     EEPROM.begin(18);
 
     // FIXME: record and reread last boot.  If rebooted too rapidly,
-    // assume an early crash, and default to a safe mode
+    // assume an early crash, and default to a safe mode (handle it
+    // through reading button press at start instead)
 
     uint8_t mode;
     uint16_t speed;
@@ -289,6 +292,11 @@ void read_Eeprom() {
                   state_power, auto_cycle, state_brightness, mode, speed, colors[0],colors[1],colors[2], last_eeprom_write_time);
     syslog.logf(LOG_INFO, "Read eeprom: state_power=%hhu, auto_cycle=%hhu, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
                   state_power, auto_cycle, state_brightness, mode, speed, colors[0],colors[1],colors[2], last_eeprom_write_time);
+
+    if (mode == 62) {
+        Serial.println("Mode erroneously read as \"reboot\".  Resetting to 0");
+        mode = 0;
+    }
 
     //FIXME: implement a CRC or detect that we've just been flashed, and go back to default mode instead
 
@@ -342,8 +350,8 @@ void commit_Eeprom() {
 
     EEPROM.commit();
 
-    syslog.logf(LOG_INFO, "Write eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
-                state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
+    syslog.logf(LOG_INFO, "Write(commit) eeprom: state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
+                state_power, auto_cycle, state_brightness, current_mode, ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
 
     eeprom_write_triggered = false;
 }
@@ -365,7 +373,7 @@ void trigger_eeprom_write(void) {
     eeprom_write_triggered=true;
     syslog.logf(LOG_INFO, "Triggering eeprom for future write");
     syslog.logf(LOG_INFO, "    : state_power=%hhu, auto_cycle=%hhd, state_brightness=%hhu, mode=%hhu, speed=%u, colors=%lu,%lu,%lu, last_eeprom_write_time=%lu\n",
-                state_power, auto_cycle, state_brightness, ws2812fx.getMode(), ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
+                state_power, auto_cycle, state_brightness, current_mode, ws2812fx.getSpeed(), colors[0],colors[1],colors[2], last_eeprom_write_time);
 }
 
 uint16_t mode_reboot(void) {
@@ -379,7 +387,7 @@ uint16_t mode_reboot(void) {
     syslog.logf(LOG_INFO, "Rebooting upon request.  Mode will reset to %hhu", ws2812fx.getMode());
     Serial.printf("Rebooting upon request.  Mode will reset to %hhu\n", ws2812fx.getMode());
     write_Eeprom();  // if triggered
-    reboot_at=millis()+100;
+    reboot_at=millis()+500;
     return(seg->speed / seglen);
 }
 
@@ -578,7 +586,7 @@ void pollButtons() {
         hsv_read_time=millis();
 
         if (triple_clicked) {
-            // saturation, back and forth, constant
+            // saturation, back and forth, constant speed
             s1 += 0.01*s_dirn;
             if (s1 >= 1) {
                 s1=0.999;
@@ -588,27 +596,27 @@ void pollButtons() {
                 s_dirn=1;
             }
 
-            syslog.logf(LOG_INFO, "setting saturation to %0.2f", s_dirn, s1);
+            syslog.logf(LOG_INFO, "click: setting saturation to %0.2f", s_dirn, s1);
         } else if (double_clicked) {
             // hue, circular, accelerating
-            h1 += 0.5;
+            h1 += 0.5; // FIXME: make this depend on time since clicked so accelarates up to a limit
             if (h1 > 360) {
                 h1-=360;
             }
 
-            syslog.logf(LOG_INFO, "setting hue to %0.2f", h1);
+            syslog.logf(LOG_INFO, "click: setting hue to %0.2f", h1);
         } else { // single clicked
             // brightness, back and forth, accelerating
             v1 += (v1/20)*v_dirn;
             if (v1 >= 1) {
-                v1=0.999;
+                v1=0.999; // FIXME: make this depend on time since clicked so accelarates up to a limit
                 v_dirn=-1;
             } else if (v1 <= 0.001) {
-                v1=0.001;
+                v1=0.001; // FIXME: make this depend on time since clicked so accelarates up to a limit
                 v_dirn=1;
             }
 
-            syslog.logf(LOG_INFO, "setting brightness %i to %0.3f", v_dirn, v1);
+            syslog.logf(LOG_INFO, "click: setting brightness %i to %0.3f", v_dirn, v1);
         }
         h1_saved=h1;
         s1_saved=s1;
@@ -714,7 +722,7 @@ void handle_fade() {
         ws2812fx.setBrightness(state_brightness);
     }
 
-    syslog.logf(LOG_INFO, "setting brightness %0.2f to %0.3f", fade_dirn, v1);
+    syslog.logf(LOG_INFO, "fade %0.2f (~x0.5s): setting brightness to %0.3f", fade_dirn, v1);
     delay(1); // give time for syslog UDP buffer
     h1_saved = h1;
     s1_saved = s1;
@@ -1129,6 +1137,15 @@ void setup_stub(void) {
   
     ledRamp(led_range,0,1000,30);
 
+    // XXXXX Suppress reading of potentially bad value eeprom if button is pressed at bootup
+    // Suppress allowing reboot if button pushed at boot
+    if (!digitalRead(mainButtonPin)) {
+        // can't use mainButton.pushed(), because debounce delayed at bootup
+        Serial.println("Main button pushed at boot, so disabling reboot");
+        syslog_buffer="Main button pushed at boot, so disabling reboot";
+        disabled_at_boot=true;
+    }
+
     ws2812fx.setCustomMode(0, F("Fire2012"), myCustomEffect);
     ws2812fx.setCustomMode(1, F("Dual Larson"), dualLarson);
     ws2812fx.setCustomMode(2, F("Rainbow Fireworks"), rainbowFireworks);
@@ -1229,7 +1246,7 @@ boolean check_audio(void) {
 void loop_stub(void) {
     unsigned long now = millis();
 
-    if (reboot_at && (now > reboot_at)) {
+    if (!disabled_at_boot && reboot_at && (now > reboot_at)) {
         reboot();
     }
 
@@ -1256,7 +1273,9 @@ void loop_stub(void) {
     }
     pollButtons();
 
-    ws2812fx.service();
+    if (!disabled_at_boot) {
+        ws2812fx.service();
+    }
     current_mode=ws2812fx.getMode();
 }
 
